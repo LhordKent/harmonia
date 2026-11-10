@@ -46,7 +46,10 @@ export function createAudioHandler(config, fetcher = fetch) {
       };
       const profile = await getDoc('users', uid);
       check(field(profile, 'status') === 'active', 403, 'This account is inactive.');
+      // Account setup must be complete: an old client or direct call cannot bypass the requirement.
+      check(profile?.fields?.mustChangePassword?.booleanValue !== true, 403, 'Change your password to finish account setup.');
       const role = field(profile, 'role');
+      check(role === 'admin' || field(profile, 'institutionId'), 403, 'School enrollment is required.');
       const params = new URL(request.url).searchParams;
       const action = params.get('action');
       let path;

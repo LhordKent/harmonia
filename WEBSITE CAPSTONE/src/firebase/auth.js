@@ -1,14 +1,12 @@
-import { 
-  signInWithEmailAndPassword, 
-  signOut, 
+import {
+  signInWithEmailAndPassword,
+  signOut,
   sendPasswordResetEmail,
-  createUserWithEmailAndPassword,
-  deleteUser,
   setPersistence,
   browserLocalPersistence,
   browserSessionPersistence
 } from "firebase/auth";
-import { auth, secondaryAuth } from "./config.js";
+import { auth } from "./config.js";
 
 /**
  * Log in a user with the primary auth instance.
@@ -21,6 +19,15 @@ export const loginUser = async (email, password, rememberMe = true) => {
 };
 
 /**
+ * After a password change older sessions are revoked; sign in again with the new password,
+ * keeping the persistence the user chose at login.
+ */
+export const reauthenticateWithNewPassword = async (email, password) => {
+  const userCredential = await signInWithEmailAndPassword(auth, email, password);
+  return userCredential.user;
+};
+
+/**
  * Log out the current user from the primary auth instance.
  */
 export const logoutUser = async () => {
@@ -28,30 +35,7 @@ export const logoutUser = async () => {
 };
 
 /**
- * Create a new authentication account without signing out the current admin.
- * Uses the secondary auth instance.
- */
-export const createAccountAuth = async (email, password, saveProfile) => {
-  if (password.length < 6) throw new Error("Use a password with at least 6 characters.");
-  if (typeof saveProfile !== "function") throw new Error("An account profile is required.");
-  const userCredential = await createUserWithEmailAndPassword(secondaryAuth, email, password);
-  try {
-    await saveProfile(userCredential.user);
-    return userCredential.user;
-  } catch (error) {
-    try {
-      await deleteUser(userCredential.user);
-    } catch {
-      throw new Error("Account profile setup failed and the sign-in account could not be removed. Contact the administrator before retrying.", { cause: error });
-    }
-    throw error;
-  } finally {
-    await signOut(secondaryAuth);
-  }
-};
-
-/**
- * Send a password reset email to the given address.
+ * Send a password reset email to the given address. Recovery is email-only.
  */
 export const resetUserPassword = async (email) => {
   await sendPasswordResetEmail(auth, email);

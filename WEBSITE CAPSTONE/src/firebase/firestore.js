@@ -23,7 +23,7 @@ export const getUserProfile = async (uid) => {
  * Loads the signed-in user's profile document.
  *
  * Profiles are NEVER created from the browser. An admin creates every
- * profile and assigns its role (see createCoach / createStudent). If no
+ * profile and assigns its role (the trusted accounts service). If no
  * profile exists this returns null and the login is refused.
  */
 export const ensureUserProfile = async (user) => {
@@ -62,42 +62,8 @@ export const getCoachById = async (coachId) => {
   return null;
 };
 
-export const createCoach = async (coachData) => {
-  // Assume coachData includes a predefined userId from Firebase Auth creation
-  const { userId, ...rest } = coachData;
-  const timestamp = serverTimestamp();
-  const batch = writeBatch(db);
-  
-  // 1. Create base user profile
-  batch.set(doc(db, "users", userId), {
-    firstName: rest.firstName || rest.name.split(" ")[0] || "",
-    lastName: rest.lastName || rest.name.split(" ").slice(1).join(" ") || "",
-    email: rest.email,
-    role: "coach",
-    institutionId: rest.institutionId,
-    status: rest.status || "active",
-    createdAt: timestamp,
-    updatedAt: timestamp
-  });
-
-  // 2. Create coach specific profile
-  const coachDoc = {
-    userId,
-    name: rest.name, // for backwards compatibility with UI
-    firstName: rest.firstName || rest.name.split(" ")[0] || "",
-    lastName: rest.lastName || rest.name.split(" ").slice(1).join(" ") || "",
-    email: rest.email,
-    institutionId: rest.institutionId,
-    status: rest.status || "active",
-    mustChangePassword: true,
-    createdAt: timestamp,
-    updatedAt: timestamp
-  };
-
-  batch.set(doc(db, "coaches", userId), coachDoc);
-  await batch.commit();
-  return { id: userId, ...coachDoc };
-};
+// Accounts (Firebase identity + profiles) are created only by the trusted accounts service;
+// see accountsService.createSchoolAccount.
 
 export const updateCoach = async (coachId, updates) => {
   const docRef = doc(db, "coaches", coachId);
@@ -153,45 +119,6 @@ export const getStudentsByCoach = async (coachId, institutionId) => {
 export const getIndependentStudents = async () => {
   const snapshot = await getDocs(query(collection(db, "students"), where("institutionId", "==", null)));
   return snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-};
-
-export const createStudent = async (studentData) => {
-  const { userId, ...rest } = studentData;
-  const timestamp = serverTimestamp();
-  const batch = writeBatch(db);
-  if (rest.coachId) requireValidCoach(await getCoachById(rest.coachId), rest.institutionId);
-
-  // 1. Create base user profile
-  batch.set(doc(db, "users", userId), {
-    firstName: rest.firstName || rest.name.split(" ")[0] || "",
-    lastName: rest.lastName || rest.name.split(" ").slice(1).join(" ") || "",
-    email: rest.email,
-    role: "student",
-    institutionId: rest.institutionId,
-    status: rest.status || "active",
-    createdAt: timestamp,
-    updatedAt: timestamp
-  });
-
-  // 2. Create student profile
-  const studentDoc = {
-    userId,
-    name: rest.name, // compatibility
-    firstName: rest.firstName || rest.name.split(" ")[0] || "",
-    lastName: rest.lastName || rest.name.split(" ").slice(1).join(" ") || "",
-    email: rest.email,
-    institutionId: rest.institutionId,
-    coachId: rest.coachId || null,
-    status: rest.status || "active",
-    mustChangePassword: true,
-    badges: [],
-    createdAt: timestamp,
-    updatedAt: timestamp
-  };
-
-  batch.set(doc(db, "students", userId), studentDoc);
-  await batch.commit();
-  return { id: userId, ...studentDoc };
 };
 
 export const updateStudent = async (studentId, updates) => {
@@ -338,6 +265,12 @@ export const addAnnouncement = async (announcement) => {
 };
 
 export const DEFAULT_INSTITUTION_ID = "institution_001";
+
+/** Platform administrators list every school; Firestore rules deny this to everyone else. */
+export const getSchools = async () => {
+  const snapshot = await getDocs(collection(db, "institutions"));
+  return snapshot.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id));
+};
 
 export const getInstitution = async (institutionId = DEFAULT_INSTITUTION_ID) => {
   const docRef = doc(db, "institutions", institutionId);

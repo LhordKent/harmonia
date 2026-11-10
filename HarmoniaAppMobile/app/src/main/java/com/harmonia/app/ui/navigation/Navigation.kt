@@ -3,7 +3,7 @@ package com.harmonia.app.ui.navigation
 sealed class Screen(val route: String) {
     object Onboarding : Screen("onboarding")
     object Login : Screen("login")
-    object SignUp : Screen("signup")
+    object AccountSetup : Screen("account_setup")
     object Dashboard : Screen("dashboard")
     object Practice : Screen("practice/{exerciseId}") {
         fun createRoute(exerciseId: String) = "practice/$exerciseId"

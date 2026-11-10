@@ -20,14 +20,10 @@ const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-// Secondary App explicitly for Admin-side user creation to prevent session hijacking
-const secondaryApp = getApps().find(a => a.name === "Secondary") || initializeApp(firebaseConfig, "Secondary");
-const secondaryAuth = getAuth(secondaryApp);
 if (emulatorProject) {
   const env = globalThis.process.env;
   if (!env.FIREBASE_AUTH_EMULATOR_HOST || !env.FIRESTORE_EMULATOR_HOST) throw new Error("Emulator endpoints must be explicit.");
   connectAuthEmulator(auth, `http://${env.FIREBASE_AUTH_EMULATOR_HOST}`, { disableWarnings: true });
-  connectAuthEmulator(secondaryAuth, `http://${env.FIREBASE_AUTH_EMULATOR_HOST}`, { disableWarnings: true });
   const [host, port] = env.FIRESTORE_EMULATOR_HOST.split(":");
   connectFirestoreEmulator(db, host, Number(port));
 }
@@ -39,5 +35,5 @@ if (!emulatorProject) isSupported().then((supported) => {
   }
 });
 
-export { app, auth, secondaryAuth, db, analytics };
+export { app, auth, db, analytics };
 export const isFirebaseConfigured = !!app;

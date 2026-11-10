@@ -29,8 +29,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun LoginScreen(
     authRepository: AuthRepository,
-    onLoginSuccess: () -> Unit,
-    onNavigateToSignUp: () -> Unit
+    onLoginSuccess: () -> Unit
 ) {
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
@@ -175,15 +174,11 @@ fun LoginScreen(
 
             Spacer(modifier = Modifier.height(24.dp))
 
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Don't have an account?", style = MaterialTheme.typography.bodyMedium)
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    text = "Sign Up",
-                    style = MaterialTheme.typography.labelLarge.copy(color = PrimaryPurpleLight),
-                    modifier = Modifier.clickable { onNavigateToSignUp() }
-                )
-            }
+            Text(
+                "Don't have an account? Contact your school for an account.",
+                style = MaterialTheme.typography.bodyMedium,
+                textAlign = TextAlign.Center
+            )
         }
     }
 

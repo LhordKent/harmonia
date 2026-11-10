@@ -10,6 +10,18 @@ export function requireWebProfile(profile) {
   };
 }
 
+/**
+ * Same state machine as the accounts service: the server profile decides, never a client flag.
+ * signedOut | inactive | passwordChangeRequired | enrollmentRequired | ready
+ */
+export function onboardingState(profile) {
+  if (!profile) return "signedOut";
+  if (profile.status !== "active") return "inactive";
+  if (profile.mustChangePassword === true) return "passwordChangeRequired";
+  if (["student", "coach", "institution"].includes(profile.role) && !profile.institutionId) return "enrollmentRequired";
+  return "ready";
+}
+
 export function requireValidCoach(coach, institutionId) {
   if (!coach || coach.status !== "active" || coach.institutionId !== institutionId) {
     throw new Error("Select an active coach from this institution.");

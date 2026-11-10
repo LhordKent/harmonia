@@ -17,11 +17,16 @@ import kotlinx.coroutines.withContext
 
 class AuthRepository(
     private val studentDao: StudentDao,
-    private val authGateway: StudentAuthGateway = FirebaseStudentAuthGateway()
+    private val authGateway: StudentAuthGateway = FirebaseStudentAuthGateway(),
+    private val onboardingCache: OnboardingCache = InMemoryOnboardingCache()
 ) {
     // An empty ID means signed out; seeded demo data is never an authenticated identity.
     private val _currentStudentId = MutableStateFlow("")
     val currentStudentId: StateFlow<String> = _currentStudentId.asStateFlow()
+
+    private val _authState = MutableStateFlow(AuthState.SignedOut)
+    /** Lessons, recordings, feedback listeners and sync are allowed only in [AuthState.Ready]. */
+    val authState: StateFlow<AuthState> = _authState.asStateFlow()
 
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     fun observeCurrentStudent(): Flow<StudentEntity?> = currentStudentId.flatMapLatest { id ->
@@ -32,53 +37,94 @@ class AuthRepository(
         studentDao.getById(_currentStudentId.value)
     }
 
-    suspend fun login(email: String, password: String): Result<StudentEntity> = withContext(Dispatchers.IO) {
+    private fun clearSession() {
         _currentStudentId.value = ""
+        _authState.value = AuthState.SignedOut
+    }
+
+    /** Cloud identity/status wins; this device's microphone and privacy preferences are preserved. */
+    private suspend fun apply(session: StudentSession): StudentEntity {
+        val remote = session.student
+        val cached = studentDao.getById(remote.id)
+        val student = if (cached == null) remote else remote.copy(
+            micSensitivity = cached.micSensitivity,
+            audioQuality = cached.audioQuality,
+            dataPrivacyOptOut = cached.dataPrivacyOptOut
+        )
+        studentDao.insertOrUpdate(student)
+        onboardingCache.markVerifiedReady(if (session.state == AuthState.Ready) student.id else null)
+        _currentStudentId.value = student.id
+        _authState.value = session.state
+        return student
+    }
+
+    suspend fun login(email: String, password: String): Result<StudentEntity> = withContext(Dispatchers.IO) {
+        clearSession()
         try {
             require(email.isNotBlank() && password.isNotBlank()) { "Please enter your email and password." }
-            val remote = authGateway.signIn(email.trim(), password)
-            val cached = studentDao.getById(remote.id)
-            // Cloud identity/status wins; preserve this device's microphone and privacy preferences.
-            val student = if (cached == null) remote else remote.copy(
-                micSensitivity = cached.micSensitivity,
-                audioQuality = cached.audioQuality,
-                dataPrivacyOptOut = cached.dataPrivacyOptOut
-            )
-            studentDao.insertOrUpdate(student)
-            _currentStudentId.value = student.id
-            Result.success(student)
+            Result.success(apply(authGateway.signIn(email.trim(), password)))
         } catch (e: CancellationException) {
             authGateway.signOut()
+            clearSession()
             throw e
         } catch (e: Exception) {
             authGateway.signOut()
+            clearSession()
             Result.failure(e)
         }
     }
 
-    suspend fun signUp(
-        fullName: String,
-        email: String,
-        password: String,
-        studentType: String = "independent"
-    ): Result<StudentEntity> = withContext(Dispatchers.IO) {
-        _currentStudentId.value = ""
+    /**
+     * Restores a persisted Firebase session at app start. Online, the server profile decides.
+     * Offline, only an account this device previously verified as ready keeps (offline) access;
+     * a legacy installation without that verification must go online once.
+     */
+    suspend fun restoreSession(): AuthState = withContext(Dispatchers.IO) {
+        val uid = authGateway.currentUid() ?: return@withContext AuthState.SignedOut.also { clearSession() }
         try {
-            require(fullName.isNotBlank() && email.isNotBlank() && password.isNotBlank()) {
-                "Please fill in all required fields."
+            val session = authGateway.currentSession()
+            if (session == null) clearSession() else apply(session)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: OfflineException) {
+            if (onboardingCache.isVerifiedReady(uid) && studentDao.getById(uid) != null) {
+                _currentStudentId.value = uid
+                _authState.value = AuthState.Ready
+            } else {
+                // Keep the Firebase session so the student can verify once online; show sign-in meanwhile.
+                clearSession()
             }
-            require(studentType in setOf("independent", "collaborated")) { "Invalid student type." }
-            // Cloud registration must finish before reporting success. Never fabricate a local UID.
-            val student = authGateway.register(fullName.trim(), email.trim(), password, studentType)
-            studentDao.insertOrUpdate(student)
-            Result.success(student)
+        } catch (e: Exception) {
+            // Inactive, removed or otherwise invalid account: never fall back to cached access.
+            onboardingCache.markVerifiedReady(null)
+            authGateway.signOut()
+            clearSession()
+        }
+        _authState.value
+    }
+
+    suspend fun changePassword(currentPassword: String, newPassword: String, confirmPassword: String): Result<AuthState> =
+        withContext(Dispatchers.IO) {
+            validateNewPassword(currentPassword, newPassword, confirmPassword)?.let {
+                return@withContext Result.failure(IllegalArgumentException(it))
+            }
+            try {
+                Result.success(apply(authGateway.changePassword(currentPassword, newPassword)).let { _authState.value })
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
+
+    /** After an email reset: the backend verifies the change and the fresh sign-in before clearing the requirement. */
+    suspend fun completeOnboarding(): Result<AuthState> = withContext(Dispatchers.IO) {
+        try {
+            Result.success(apply(authGateway.completeOnboarding()).let { _authState.value })
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             Result.failure(e)
-        } finally {
-            // Registration returns to the login screen and must not leave a hidden Firebase session.
-            authGateway.signOut()
         }
     }
 
@@ -103,7 +149,8 @@ class AuthRepository(
     }
 
     fun logout() {
-        _currentStudentId.value = ""
+        onboardingCache.markVerifiedReady(null)
+        clearSession()
         authGateway.signOut()
     }
 

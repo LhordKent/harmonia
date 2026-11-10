@@ -8,7 +8,7 @@ import { getExercises, getExercisesByCoach, createExercise, updateExercise, dele
 import ConfirmModal from "../components/Shared/ConfirmModal";
 
 export const Exercises = () => {
-  const { currentUser, isAdmin } = useAuth();
+  const { currentUser, canManageAccounts: isAdmin } = useAuth(); // school and platform admins view the whole school catalogue
   const { showToast } = useToast();
 
   // Data Loading

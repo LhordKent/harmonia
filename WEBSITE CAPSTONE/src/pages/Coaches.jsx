@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from "react";
 import { useAuth } from "../context/AuthContext";
 import { useToast } from "../context/ToastContext";
-import { getCoaches, createCoach, updateCoach, deleteCoach } from "../firebase/firestore";
-import { createAccountAuth } from "../firebase/auth";
+import { getCoaches, updateCoach, deleteCoach } from "../firebase/firestore";
+import { createSchoolAccount } from "../firebase/accountsService";
+import CredentialHandover from "../components/Shared/CredentialHandover";
 import ConfirmModal from "../components/Shared/ConfirmModal";
 import { Navigate } from "react-router-dom";
 
@@ -20,7 +21,7 @@ export const Coaches = () => {
 
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  const [handover, setHandover] = useState(null);
   const [status, setStatus] = useState("active");
 
   const [showDeleteModal, setShowDeleteModal] = useState(false);
@@ -52,7 +53,6 @@ export const Coaches = () => {
   const resetForm = () => {
     setName("");
     setEmail("");
-    setPassword("");
     setStatus("active");
     setEditingId(null);
   };
@@ -79,26 +79,16 @@ export const Coaches = () => {
       showToast("Name and email are required.", "warning");
       return;
     }
-    if (modalMode === "create" && !password) {
-      showToast("Password is required for new coaches.", "warning");
-      return;
-    }
 
     try {
       setLoading(true);
       if (modalMode === "create") {
-        await createAccountAuth(email, password, async (newAuthUser) => createCoach({
-          userId: newAuthUser.uid,
-          name,
-          email,
-          status,
-          institutionId: currentUser.institutionId
-        }));
-        showToast("Coach created successfully.", "success");
+        // The trusted accounts service creates the sign-in identity and profiles with the school base password.
+        const account = await createSchoolAccount({ role: "coach", name, email, schoolId: currentUser.institutionId });
+        setHandover(account);
       } else {
-        const updateData = { name, email, status };
-        // We cannot update auth password here easily, so we only update firestore data
-        await updateCoach(editingId, updateData);
+        // Email is the login identifier and stays fixed; passwords are changed only by their owner.
+        await updateCoach(editingId, { name, status });
         showToast("Coach updated successfully.", "success");
       }
       setShowFormModal(false);
@@ -106,11 +96,7 @@ export const Coaches = () => {
       fetchCoaches();
     } catch (err) {
       console.error(err);
-      if (err.code === "auth/email-already-in-use") {
-        showToast("An account with this email already exists.", "danger");
-      } else {
-        showToast(err.message || "Failed to save coach.", "danger");
-      }
+      showToast(err.message || "Failed to save coach.", "danger");
     } finally {
       setLoading(false);
     }
@@ -285,18 +271,11 @@ export const Coaches = () => {
                   required
                 />
               </div>
-              <div className="mb-4">
-                <label className="harmonia-label">
-                  {modalMode === "edit" ? "New Password (Optional)" : "Password"}
-                </label>
-                <input
-                  type="password"
-                  className="harmonia-input"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  required={modalMode === "create"}
-                />
-              </div>
+              <p className="text-muted-custom mb-4" style={{ fontSize: "0.8rem" }}>
+                {modalMode === "create"
+                  ? "The coach starts with your school's base password and must choose a new one at first sign-in. Password recovery is sent to this email."
+                  : "The login email cannot be changed here. Coaches change their own passwords."}
+              </p>
 
               <div className="d-flex justify-content-end gap-3 pt-3 border-top border-secondary border-opacity-10">
                 <button type="button" className="btn btn-harmonia-outline" onClick={() => setShowFormModal(false)} disabled={loading}>
@@ -311,12 +290,14 @@ export const Coaches = () => {
         </div>
       )}
 
+      <CredentialHandover account={handover} onClose={() => setHandover(null)} />
+
       <ConfirmModal
         isOpen={showDeleteModal}
         onClose={() => setShowDeleteModal(false)}
         onConfirm={handleConfirmDelete}
         title="Delete Vocal Coach"
-        message={`Are you sure you want to delete ${coachToDelete?.name}? This action cannot be undone.`}
+        message={`Deactivate ${coachToDelete?.name}? Their sign-in stops working; history and assignments are kept and you can reactivate them later.`}
         confirmText="Confirm Delete"
       />
     </div>

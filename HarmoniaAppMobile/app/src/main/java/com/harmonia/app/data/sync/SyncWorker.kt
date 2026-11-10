@@ -46,6 +46,25 @@ class SyncWorker(
 
         val auth = FirebaseAuth.getInstance()
         val currentUid = auth.currentUser?.uid ?: return@withContext Result.success()
+        // Never upload or refresh while account setup is pending (or for a removed account):
+        // the persisted Firebase session alone does not authorize synchronization.
+        val ready = try {
+            val profile = firestore.collection("users").document(currentUid)
+                .get(com.google.firebase.firestore.Source.SERVER).await().data
+            com.harmonia.app.data.repository.onboardingState(profile) ==
+                com.harmonia.app.data.repository.AuthState.Ready
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            if (e is com.google.firebase.firestore.FirebaseFirestoreException &&
+                e.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.UNAVAILABLE) {
+                return@withContext Result.retry()
+            }
+            false
+        }
+        if (!ready) {
+            Log.i(TAG, "Account setup is not complete; skipping synchronization.")
+            return@withContext Result.success()
+        }
         val audioStore = SupabaseAudioStore(firestore, auth)
 
         var anyFailed = false

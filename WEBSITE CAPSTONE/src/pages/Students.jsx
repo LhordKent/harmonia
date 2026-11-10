@@ -4,9 +4,10 @@ import { useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useToast } from "../context/ToastContext";
 import { 
-  getStudents, getIndependentStudents, getStudentsByCoach, getSessions, getExercises, getCoaches, updateStudent, deleteStudent, updateSession, getBadges, createStudent 
+  getStudents, getIndependentStudents, getStudentsByCoach, getSessions, getExercises, getCoaches, updateStudent, deleteStudent, updateSession, getBadges
 } from "../firebase/firestore";
-import { createAccountAuth } from "../firebase/auth";
+import { createSchoolAccount } from "../firebase/accountsService";
+import CredentialHandover from "../components/Shared/CredentialHandover";
 import {
   generateAIFeedback,
   getCoachFeedback,
@@ -75,7 +76,7 @@ export const Students = () => {
   
   const [formName, setFormName] = useState("");
   const [formEmail, setFormEmail] = useState("");
-  const [formPassword, setFormPassword] = useState("");
+  const [handover, setHandover] = useState(null);
   const [formCoachId, setFormCoachId] = useState("");
   const [formStatus, setFormStatus] = useState("active");
 
@@ -252,7 +253,6 @@ export const Students = () => {
   const handleOpenCreateStudent = () => {
     setFormName("");
     setFormEmail("");
-    setFormPassword("");
     setFormCoachId("");
     setFormStatus("active");
     setStudentModalMode("create");
@@ -278,22 +278,13 @@ export const Students = () => {
     try {
       setLoading(true);
       if (studentModalMode === "create") {
-        if (!formPassword) {
-          showToast("Password is required to create a student.", "warning");
-          setLoading(false);
-          return;
-        }
-        
-        // 1. Create Auth Account using secondary auth (prevents admin logout)
-        await createAccountAuth(formEmail, formPassword, async (newAuthUser) => createStudent({
-          userId: newAuthUser.uid,
-          name: formName,
-          email: formEmail,
-          coachId: formCoachId || null,
-          institutionId: currentUser.institutionId,
-          status: formStatus
-        }));
-        showToast("Student account created successfully.", "success");
+        // The trusted accounts service creates identity + profiles with the school base password.
+        const account = await createSchoolAccount({
+          role: "student", name: formName, email: formEmail,
+          coachId: formCoachId || null, schoolId: currentUser.institutionId,
+        });
+        if (formStatus === "inactive" && account.uid) await updateStudent(account.uid, { status: "inactive" });
+        setHandover(account);
       } else {
         await updateStudent(editingStudentId, {
           institutionId: students.find(s => s.id === editingStudentId)?.institutionId || currentUser.institutionId,
@@ -309,11 +300,7 @@ export const Students = () => {
       fetchData();
     } catch (err) {
       console.error(err);
-      if (err.code === "auth/email-already-in-use") {
-        showToast("An account with this email already exists.", "danger");
-      } else {
-        showToast(err.message || "Failed to save student.", "danger");
-      }
+      showToast(err.message || "Failed to save student.", "danger");
     } finally {
       setLoading(false);
     }
@@ -569,12 +556,12 @@ export const Students = () => {
 
       {currentUser.role === "admin" && (
         <div className="d-flex gap-2 mb-3">
-          <button className={`btn ${!showPendingEnrollment ? "btn-harmonia" : "btn-harmonia-outline"}`} onClick={() => setShowPendingEnrollment(false)}>Institution roster</button>
-          <button className={`btn ${showPendingEnrollment ? "btn-harmonia" : "btn-harmonia-outline"}`} onClick={() => setShowPendingEnrollment(true)}>Independent students awaiting enrollment</button>
+          <button className={`btn ${!showPendingEnrollment ? "btn-harmonia" : "btn-harmonia-outline"}`} onClick={() => setShowPendingEnrollment(false)}>School roster</button>
+          <button className={`btn ${showPendingEnrollment ? "btn-harmonia" : "btn-harmonia-outline"}`} onClick={() => setShowPendingEnrollment(true)}>Unassigned students awaiting enrollment</button>
         </div>
       )}
       {showPendingEnrollment && (
-        <p className="text-muted-custom">Edit a student to approve enrollment into your institution and select a coach. Independent students may continue practicing without enrollment.</p>
+        <p className="text-muted-custom">These earlier self-registered students have no school. Edit one to enroll them into the selected school ({currentUser.institutionId || "none selected"}) and choose a coach. They cannot use the app until enrolled.</p>
       )}
       {/* Roster Table */}
       <div className="harmonia-card p-0">
@@ -789,10 +776,9 @@ export const Students = () => {
                 <input type="email" className="harmonia-input" value={formEmail} readOnly={studentModalMode === "edit"} onChange={(e) => setFormEmail(e.target.value)} required />
               </div>
               {studentModalMode === "create" && (
-                <div className="mb-3">
-                  <label className="harmonia-label">Password</label>
-                  <input type="password" className="harmonia-input" value={formPassword} onChange={(e) => setFormPassword(e.target.value)} required />
-                </div>
+                <p className="text-muted-custom mb-3" style={{ fontSize: "0.8rem" }}>
+                  The student signs in on the Android app with your school's base password and must choose a new one first. Password recovery is sent to this email.
+                </p>
               )}
               <div className="mb-3">
                 <label className="harmonia-label">Assigned Coach <span className="text-muted-custom" style={{fontSize:"0.75rem"}}>(optional — can assign later)</span></label>
@@ -818,6 +804,8 @@ export const Students = () => {
           </div>
         </div>
       )}
+
+      <CredentialHandover account={handover} onClose={() => setHandover(null)} />
 
       {/* NOTIFICATION MODAL (Coach Only) */}
       {showNotifyModal && (

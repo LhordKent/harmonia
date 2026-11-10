@@ -6,13 +6,17 @@ const config = { supabaseUrl: 'https://example.supabase.co', serviceKey: 'server
   firebaseProject: 'harmonia-47c73', firebaseApiKey: 'public-firebase-key' };
 const document = data => ({ fields: Object.fromEntries(Object.entries(data).map(([k, v]) => [k, { stringValue: v }])) });
 function setup({ uid = 'student1', role = 'student', active = true, studentActive = true,
-  validToken = true, studentRead = true, storageStatus = 200, duplicate = false } = {}) {
+  validToken = true, studentRead = true, storageStatus = 200, duplicate = false, pending = false, institutionId = 'inst1' } = {}) {
   const calls = [];
   const fetcher = async (url, options) => {
     calls.push({ url, options });
     const json = (data, status = 200) => Response.json(data, { status });
     if (url.includes('accounts:lookup')) return validToken ? json({ users: [{ localId: uid }] }) : json({}, 400);
-    if (url.includes('/documents/users/')) return json(document({ role, status: active ? 'active' : 'inactive' }));
+    if (url.includes('/documents/users/')) {
+      const doc = document({ role, status: active ? 'active' : 'inactive', ...(institutionId ? { institutionId } : {}) });
+      if (pending) doc.fields.mustChangePassword = { booleanValue: true };
+      return json(doc);
+    }
     if (url.includes('/documents/students/')) return studentRead ? json(document({ status: studentActive ? 'active' : 'inactive' })) : json({}, 403);
     if (url.includes('/object/sign/')) return json({ signedURL: '/object/sign/harmonia-audio/attempts/student1/a1?token=short-lived' }, storageStatus);
     if (url.includes('/object/')) return duplicate ? json({ statusCode: '409', error: 'Duplicate' }, 400) : json({}, storageStatus);
@@ -124,4 +128,16 @@ test('only admins can delete a validated audio reference', async () => {
       assert.deepEqual(JSON.parse(removal.options.body), { prefixes: ['attempts/student1/a1'] });
     }
   }
+});
+
+test('pending password change and missing school enrollment block upload and playback', async () => {
+  for (const option of [{ pending: true }, { institutionId: null }, { role: 'coach', pending: true }]) {
+    for (const query of ['action=upload&kind=attempts&id=a1', 'action=playback&ref=supabase://harmonia-audio/attempts/student1/a1']) {
+      const { handle, calls } = setup(option);
+      assert.equal((await handle(request(query))).status, 403);
+      assert.ok(calls.every(c => !c.url.includes('/storage/')));
+    }
+  }
+  const { handle } = setup({ role: 'admin', institutionId: null });
+  assert.equal((await handle(request('action=playback&ref=supabase://harmonia-audio/attempts/student1/a1'))).status, 200);
 });

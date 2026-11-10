@@ -10,7 +10,6 @@ import { exerciseFields } from '../src/firebase/exerciseModel.js';
 process.env.HARMONIA_EMULATOR_PROJECT = 'demo-harmonia';
 if (!process.env.FIREBASE_AUTH_EMULATOR_HOST || !process.env.FIRESTORE_EMULATOR_HOST) throw new Error('Run these tests through emulators:exec.');
 const { auth, db } = await import('../src/firebase/config.js');
-const { createAccountAuth } = await import('../src/firebase/auth.js');
 const service = await import('../src/firebase/firestore.js');
 const feedback = await import('../src/firebase/feedbackService.js');
 const { requireWebProfile } = await import('../src/firebase/access.js');
@@ -27,23 +26,30 @@ before(async () => {
 });
 after(async () => { await signOut(auth); await env?.cleanup(); });
 
-test('actual staff provisioning preserves admin session and commits role/profile together', async () => {
-  coach = await createAccountAuth('coach-service@example.test', password, u => service.createCoach({ userId: u.uid, name: 'Coach Test', email: u.email, institutionId: 'inst1', status: 'active' }));
-  assert.equal(auth.currentUser.uid, admin.uid);
+// Accounts are provisioned by the trusted accounts service (see accounts.integration.test.mjs);
+// here completed (ready) fixtures are seeded directly so the data services can be exercised.
+async function seedAccount(email, role, extra = {}) {
+  const response = await fetch(`http://${process.env.FIREBASE_AUTH_EMULATOR_HOST}/identitytoolkit.googleapis.com/v1/accounts:signUp?key=fake`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email, password, returnSecureToken: true }) });
+  const uid = (await response.json()).localId;
+  const name = extra.name || email.split('@')[0];
+  await env.withSecurityRulesDisabled(async ctx => {
+    const fdb = ctx.firestore();
+    await setDoc(doc(fdb, 'users', uid), { role, status: 'active', institutionId: 'institutionId' in extra ? extra.institutionId : 'inst1', firstName: name, lastName: 'Test', email, mustChangePassword: false });
+    if (role === 'coach') await setDoc(doc(fdb, 'coaches', uid), { userId: uid, name, email, institutionId: 'inst1', status: 'active' });
+    if (role === 'student') await setDoc(doc(fdb, 'students', uid), { userId: uid, name, email, institutionId: 'institutionId' in extra ? extra.institutionId : 'inst1', coachId: extra.coachId || null, status: 'active', studentType: extra.studentType || 'collaborated' });
+  });
+  return { uid, email };
+}
+
+test('ready staff and student fixtures load through the actual profile services', async () => {
+  coach = await seedAccount('coach-service@example.test', 'coach', { name: 'Coach Test' });
+  student = await seedAccount('student-service@example.test', 'student', { name: 'Student Test', coachId: coach.uid });
+  unrelated = await seedAccount('unrelated-service@example.test', 'student', { name: 'Unrelated' });
+  await signInWithEmailAndPassword(auth, admin.email, password);
   assert.equal((await service.getUserProfile(coach.uid)).role, 'coach');
   assert.equal((await service.getCoachById(coach.uid)).userId, coach.uid);
-  student = await createAccountAuth('student-service@example.test', password, u => service.createStudent({ userId: u.uid, name: 'Student Test', email: u.email, institutionId: 'inst1', coachId: coach.uid, status: 'active' }));
-  unrelated = await createAccountAuth('unrelated-service@example.test', password, u => service.createStudent({ userId: u.uid, name: 'Unrelated', email: u.email, institutionId: 'inst1', status: 'active' }));
-  assert.equal(auth.currentUser.uid, admin.uid);
   assert.equal((await service.getUserProfile(student.uid)).role, 'student');
-});
-
-test('failed profile provisioning removes only the newly created Auth account', async () => {
-  await assert.rejects(createAccountAuth('failed-service@example.test', password, async () => { throw new Error('Injected profile failure'); }), /Injected profile failure/);
-  assert.equal(auth.currentUser.uid, admin.uid);
-  // The sign-in endpoint independently proves the failed account cannot authenticate.
-  const signIn = await fetch(`http://${process.env.FIREBASE_AUTH_EMULATOR_HOST}/identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=fake`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'failed-service@example.test', password, returnSecureToken: true }) });
-  assert.equal(signIn.ok, false);
 });
 
 test('actual scoped service queries return only the assigned student and sessions', async () => {
@@ -86,23 +92,20 @@ test('admin deactivation updates both profiles and denies an existing student se
   await assert.rejects(getDocFromServer(doc(db, 'students', student.uid)), /permission/i);
 });
 
-test('mobile-shaped signup succeeds against actual Auth and Firestore emulator services', async () => {
-  await signOut(auth);
-  const newUser = (await createUserWithEmailAndPassword(auth, 'independent-service@example.test', password)).user;
-  const batch = writeBatch(db);
-  batch.set(doc(db, 'users', newUser.uid), { uid: newUser.uid, firstName: 'Independent', lastName: 'Student', email: newUser.email, role: 'student', status: 'active', institutionId: null, createdAt: 1, updatedAt: 1 });
-  batch.set(doc(db, 'students', newUser.uid), { id: newUser.uid, userId: newUser.uid, name: 'Independent Student', fullName: 'Independent Student', firstName: 'Independent', lastName: 'Student', email: newUser.email, studentType: 'independent', status: 'active', institutionId: null, createdAt: 1, updatedAt: 1 });
-  await batch.commit();
-  assert.equal((await service.getUserProfile(newUser.uid)).role, 'student');
-  assert.equal((await getDocFromServer(doc(db, 'students', newUser.uid))).data().institutionId, null);
+test('a legacy unassigned student is enrolled by the platform admin and then appears in the coach roster', async () => {
+  const legacy = await seedAccount('independent-service@example.test', 'student', { institutionId: null, studentType: 'independent' });
+  await signInWithEmailAndPassword(auth, legacy.email, password);
+  await assert.rejects(getDocFromServer(doc(db, 'students', legacy.uid)), /permission/i);
   await signInWithEmailAndPassword(auth, admin.email, password);
   const pending = await service.getIndependentStudents();
-  assert.ok(pending.some(s => s.id === newUser.uid));
-  await service.enrollStudent(newUser.uid, 'inst1', coach.uid);
-  assert.equal((await service.getUserProfile(newUser.uid)).institutionId, 'inst1');
+  assert.ok(pending.some(s => s.id === legacy.uid));
+  await service.enrollStudent(legacy.uid, 'inst1', coach.uid);
+  assert.equal((await service.getUserProfile(legacy.uid)).institutionId, 'inst1');
   await signInWithEmailAndPassword(auth, coach.email, password);
   const roster = await service.getStudents('inst1', { id: coach.uid, role: 'coach', institutionId: 'inst1' });
-  assert.ok(roster.some(s => s.id === newUser.uid));
+  assert.ok(roster.some(s => s.id === legacy.uid));
+  await signInWithEmailAndPassword(auth, legacy.email, password);
+  assert.equal((await getDocFromServer(doc(db, 'students', legacy.uid))).data().institutionId, 'inst1');
 });
 
 test('mobile transaction, actual coach correction and retry preserve original analysis and published review', async () => {

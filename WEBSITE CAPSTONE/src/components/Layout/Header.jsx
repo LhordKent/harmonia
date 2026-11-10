@@ -1,9 +1,15 @@
 import React, { useState, useEffect } from "react";
 import { useAuth } from "../../context/AuthContext";
-import { getAnnouncements } from "../../firebase/firestore";
+import { getAnnouncements, getSchools } from "../../firebase/firestore";
 
 export const Header = ({ title, toggleSidebar }) => {
-  const { currentUser, isAdmin } = useAuth();
+  const { currentUser, isAdmin, isPlatformAdmin, isSchoolAdmin, selectedSchoolId, setSelectedSchoolId } = useAuth();
+  const [schools, setSchools] = useState([]);
+
+  useEffect(() => {
+    if (!isPlatformAdmin) return;
+    getSchools().then(setSchools).catch(() => setSchools([]));
+  }, [isPlatformAdmin]);
   const [announcements, setAnnouncements] = useState([]);
   const [showNotifications, setShowNotifications] = useState(false);
 
@@ -39,6 +45,13 @@ export const Header = ({ title, toggleSidebar }) => {
 
       {/* User Info / Notifications */}
       <div className="d-flex align-items-center gap-3">
+        {isPlatformAdmin && (
+          <select className="harmonia-input py-1" style={{ maxWidth: 220 }} aria-label="Active school"
+            value={selectedSchoolId} onChange={(e) => setSelectedSchoolId(e.target.value)}>
+            {!schools.some(s => s.id === selectedSchoolId) && <option value={selectedSchoolId}>{selectedSchoolId || "Select a school"}</option>}
+            {schools.map(s => <option key={s.id} value={s.id}>{s.name || s.id}</option>)}
+          </select>
+        )}
         {/* Notifications Dropdown */}
         <div className="position-relative">
           <button 
@@ -106,7 +119,7 @@ export const Header = ({ title, toggleSidebar }) => {
         <div className="d-none d-sm-block text-end">
           <div className="text-white fw-semibold" style={{ fontSize: "0.85rem" }}>{currentUser?.name}</div>
           <div className="text-muted-custom" style={{ fontSize: "0.7rem" }}>
-            {isAdmin ? "Institutional Admin" : "Vocal Coach"}
+            {isPlatformAdmin ? "Platform Administrator" : isSchoolAdmin ? "School Administrator" : "Vocal Coach"}
           </div>
         </div>
       </div>

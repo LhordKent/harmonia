@@ -11,6 +11,8 @@ import Exercises from "./pages/Exercises";
 import Reports from "./pages/Reports";
 import Settings from "./pages/Settings";
 import Coaches from "./pages/Coaches";
+import Schools from "./pages/Schools";
+import AccountSetup from "./pages/AccountSetup";
 
 // Components
 import Sidebar from "./components/Layout/Sidebar";
@@ -21,7 +23,7 @@ import "./App.css";
 
 // PROTECTED ROUTE GUARD
 const ProtectedRoute = ({ children }) => {
-  const { currentUser, loading } = useAuth();
+  const { currentUser, loading, authState } = useAuth();
   const location = useLocation();
 
   if (loading) {
@@ -38,6 +40,11 @@ const ProtectedRoute = ({ children }) => {
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
+  // Pending accounts see only the setup screen, whatever URL was opened, refreshed or restored.
+  if (authState !== "ready") {
+    return <AccountSetup />;
+  }
+
   return children;
 };
 
@@ -45,6 +52,7 @@ const ProtectedRoute = ({ children }) => {
 const DashboardLayout = ({ title }) => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const location = useLocation();
+  const { selectedSchoolId } = useAuth();
 
   // Map route path to human-readable screen titles
   const getScreenTitle = () => {
@@ -54,6 +62,8 @@ const DashboardLayout = ({ title }) => {
       case "/exercises": return "Exercise Directory";
       case "/reports": return "Reports & Performance Analytics";
       case "/settings": return "System Settings";
+      case "/schools": return "School Management";
+      case "/coaches": return "Coach Management";
       default: return "Harmonia Admin";
     }
   };
@@ -76,7 +86,8 @@ const DashboardLayout = ({ title }) => {
         <Header title={getScreenTitle()} toggleSidebar={setSidebarOpen} />
 
         {/* Actual Page Component */}
-        <main className="fade-in">
+        {/* Remount pages when a platform administrator switches schools so data reloads. */}
+        <main className="fade-in" key={selectedSchoolId || "no-school"}>
           <Routes>
             <Route path="dashboard" element={<Dashboard />} />
             <Route path="students" element={<Students />} />
@@ -84,6 +95,7 @@ const DashboardLayout = ({ title }) => {
             <Route path="reports" element={<Reports />} />
             <Route path="coaches" element={<Coaches />} />
             <Route path="settings" element={<Settings />} />
+            <Route path="schools" element={<Schools />} />
             <Route path="" element={<Navigate to="dashboard" replace />} />
           </Routes>
         </main>

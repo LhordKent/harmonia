@@ -3,7 +3,7 @@ import { NavLink } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
 
 export const Sidebar = ({ isOpen, toggleSidebar }) => {
-  const { currentUser, logout, canManageAccounts: isAdmin } = useAuth();
+  const { currentUser, logout, canManageAccounts: isAdmin, isPlatformAdmin } = useAuth();
 
   const handleNavClick = () => {
     if (window.innerWidth < 992) {
@@ -56,6 +56,17 @@ export const Sidebar = ({ isOpen, toggleSidebar }) => {
           <span>Exercises</span>
         </NavLink>
 
+        {isPlatformAdmin && (
+          <NavLink
+            to="/schools"
+            className={({ isActive }) => `sidebar-nav-link ${isActive ? "active" : ""}`}
+            onClick={handleNavClick}
+          >
+            <i className="bi bi-building"></i>
+            <span>Schools</span>
+          </NavLink>
+        )}
+
         {isAdmin && (
           <NavLink 
             to="/coaches" 
@@ -95,7 +106,7 @@ export const Sidebar = ({ isOpen, toggleSidebar }) => {
           <div style={{ minWidth: 0 }}>
             <h6 className="text-white mb-0 text-truncate" style={{ fontSize: "0.9rem" }}>{currentUser?.name}</h6>
             <span className="text-muted-custom" style={{ fontSize: "0.75rem" }}>
-              {currentUser?.role === "institution" ? "Institution Manager" : isAdmin ? "Administrator" : "Vocal Coach"}
+              {currentUser?.role === "institution" ? "School Administrator" : isPlatformAdmin ? "Platform Administrator" : "Vocal Coach"}
             </span>
           </div>
         </div>

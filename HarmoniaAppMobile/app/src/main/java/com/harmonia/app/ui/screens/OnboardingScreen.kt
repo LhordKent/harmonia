@@ -36,8 +36,7 @@ data class OnboardingPage(
 
 @Composable
 fun OnboardingScreen(
-    onNavigateToLogin: () -> Unit,
-    onNavigateToSignUp: () -> Unit
+    onNavigateToLogin: () -> Unit
 ) {
     val pages = listOf(
         OnboardingPage(
@@ -171,17 +170,12 @@ fun OnboardingScreen(
                     }
                 }
 
-                // CTA Buttons
-                Button(
-                    onClick = onNavigateToSignUp,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(52.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = PrimaryPurple),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Text("Create Account", style = MaterialTheme.typography.labelLarge)
-                }
+                // Accounts are created by schools; there is no public registration.
+                Text(
+                    text = "Contact your school for an account.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = TextMuted
+                )
 
                 Spacer(modifier = Modifier.height(12.dp))
 

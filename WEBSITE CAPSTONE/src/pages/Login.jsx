@@ -53,7 +53,7 @@ export const Login = () => {
     setLoading(true);
     try {
       await login(email, password, rememberMe);
-      showToast("Signed in successfully. Welcome to Harmonia!", "success");
+      showToast("Signed in successfully.", "success");
       navigate(redirectPath, { replace: true });
     } catch (error) {
       console.error("Login error:", error);
@@ -201,6 +201,9 @@ export const Login = () => {
             </button>
 
           </form>
+          <p className="text-center text-muted-custom mt-3 mb-0" style={{ fontSize: "0.85rem" }}>
+            Don't have an account? Contact your school for an account.
+          </p>
         </div>
 
 

@@ -4,9 +4,10 @@ import { useToast } from "../context/ToastContext";
 import { 
   getInstitution, updateInstitution, addAnnouncement, getBadges, saveBadge 
 } from "../firebase/firestore";
+import { setSchoolBasePassword, validateNewPassword } from "../firebase/accountsService";
 
 export const Settings = () => {
-  const { currentUser, isAdmin, updateProfileData } = useAuth();
+  const { currentUser, isAdmin, canManageAccounts, updateProfileData, changePassword } = useAuth();
   const { showToast } = useToast();
 
   // Active Tab
@@ -18,8 +19,11 @@ export const Settings = () => {
   // PROFILE STATE
   const [profileName, setProfileName] = useState(currentUser?.name || "");
   const [profileEmail, setProfileEmail] = useState(currentUser?.email || "");
+  const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [basePassword, setBasePassword] = useState("");
+  const [confirmBasePassword, setConfirmBasePassword] = useState("");
 
   // INSTITUTION STATE (Admin Only)
   const [instName, setInstName] = useState("");
@@ -51,7 +55,7 @@ export const Settings = () => {
   const [badgeCriteria, setBadgeCriteria] = useState("");
 
   const loadSettingsData = async () => {
-    if (!isAdmin) return;
+    if (!canManageAccounts) return;
     try {
       setLoading(true);
       const inst = await getInstitution(currentUser?.institutionId);
@@ -68,10 +72,9 @@ export const Settings = () => {
         }
       }
 
-      const badges = await getBadges();
-      setBadgesList(badges);
+      if (isAdmin) setBadgesList(await getBadges());
 
-    } catch (err) {
+    } catch(err) {
       showToast("Error loading system settings.", "danger");
     } finally {
       setLoading(false);
@@ -80,7 +83,7 @@ export const Settings = () => {
 
   useEffect(() => {
     loadSettingsData();
-  }, [isAdmin]);
+  }, [canManageAccounts]);
 
   // Profile Form Handler
   const handleUpdateProfile = async (e) => {
@@ -90,27 +93,45 @@ export const Settings = () => {
       return;
     }
 
-    if (newPassword && newPassword !== confirmPassword) {
-      showToast("New passwords do not match.", "danger");
-      return;
-    }
-
     try {
       setLoading(true);
-      const updateData = { name: profileName };
-      
-      // Note: live password update is simulated in mock mode, but standard update is supported
-      await updateProfileData(updateData);
-      
-      if (newPassword) {
-        showToast("Profile and password updated successfully.", "success");
-        setNewPassword("");
-        setConfirmPassword("");
-      } else {
-        showToast("Personal profile details updated.", "success");
-      }
-    } catch (err) {
+      await updateProfileData({ name: profileName });
+      showToast("Personal profile details updated.", "success");
+    } catch(err) {
       showToast(err.message || "Failed to update profile.", "danger");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Real Firebase password change through the trusted accounts service.
+  const handleChangePassword = async (e) => {
+    e.preventDefault();
+    const problem = validateNewPassword({ currentPassword, newPassword, confirmPassword });
+    if (problem) { showToast(problem, "danger"); return; }
+    try {
+      setLoading(true);
+      await changePassword(currentPassword, newPassword);
+      setCurrentPassword(""); setNewPassword(""); setConfirmPassword("");
+      showToast("Password changed. Use your new password next time you sign in.", "success");
+    } catch (err) {
+      showToast(err.message || "Your password could not be changed.", "danger");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSaveBasePassword = async (e) => {
+    e.preventDefault();
+    if (basePassword.length < 8) { showToast("The base password needs at least 8 characters.", "danger"); return; }
+    if (basePassword !== confirmBasePassword) { showToast("The base password and confirmation do not match.", "danger"); return; }
+    try {
+      setLoading(true);
+      await setSchoolBasePassword(currentUser.institutionId, basePassword);
+      setBasePassword(""); setConfirmBasePassword("");
+      showToast("Base password saved. It applies to new accounts only; existing passwords are unchanged.", "success");
+    } catch (err) {
+      showToast(err.message || "The base password could not be saved.", "danger");
     } finally {
       setLoading(false);
     }
@@ -219,9 +240,9 @@ export const Settings = () => {
               <span>Personal Profile</span>
             </button>
 
-            {isAdmin && (
+            {canManageAccounts && (
               <>
-                <h6 className="text-muted-custom px-3 py-1 mt-4 mb-2 fw-semibold" style={{ fontSize: "0.75rem", textTransform: "uppercase" }}>Institution Admin Controls</h6>
+                <h6 className="text-muted-custom px-3 py-1 mt-4 mb-2 fw-semibold" style={{ fontSize: "0.75rem", textTransform: "uppercase" }}>School Admin Controls</h6>
                 
                 <button 
                   onClick={() => setActiveTab("institution")}
@@ -231,7 +252,8 @@ export const Settings = () => {
                   <span>Academy Details</span>
                 </button>
 
-                <button 
+                {isAdmin && (<>
+                <button
                   onClick={() => setActiveTab("announcements")}
                   className={`btn text-start border-0 py-2.5 px-3 rounded-3 d-flex align-items-center gap-2.5 ${activeTab === "announcements" ? "btn-harmonia" : "text-muted-custom bg-transparent"}`}
                 >
@@ -246,6 +268,7 @@ export const Settings = () => {
                   <i className="bi bi-trophy-fill"></i>
                   <span>Badge Configuration</span>
                 </button>
+                </>)}
 
                 <button 
                   onClick={() => setActiveTab("privacy")}
@@ -292,11 +315,27 @@ export const Settings = () => {
                   </div>
                 </div>
 
-                <hr className="my-4 border-secondary border-opacity-20" />
-                <h6 className="text-white mb-3">Change Account Password</h6>
-                
+                <div className="text-end">
+                  <button type="submit" className="btn btn-harmonia px-4 py-2" disabled={loading}>Save Profile</button>
+                </div>
+              </form>
+
+              <hr className="my-4 border-secondary border-opacity-20" />
+              <h6 className="text-white mb-3">Change Account Password</h6>
+              <form onSubmit={handleChangePassword} noValidate>
                 <div className="row g-3 mb-4">
-                  <div className="col-md-6 d-flex flex-column">
+                  <div className="col-md-4 d-flex flex-column">
+                    <label className="harmonia-label" htmlFor="current-pw">Current Password</label>
+                    <input
+                      id="current-pw"
+                      type="password"
+                      autoComplete="current-password"
+                      className="harmonia-input"
+                      value={currentPassword}
+                      onChange={(e) => setCurrentPassword(e.target.value)}
+                    />
+                  </div>
+                  <div className="col-md-4 d-flex flex-column">
                     <label className="harmonia-label" htmlFor="new-pw">New Password</label>
                     <input 
                       id="new-pw"
@@ -307,7 +346,7 @@ export const Settings = () => {
                       onChange={(e) => setNewPassword(e.target.value)}
                     />
                   </div>
-                  <div className="col-md-6 d-flex flex-column">
+                  <div className="col-md-4 d-flex flex-column">
                     <label className="harmonia-label" htmlFor="confirm-pw">Confirm New Password</label>
                     <input 
                       id="confirm-pw"
@@ -326,7 +365,7 @@ export const Settings = () => {
                     className="btn btn-harmonia px-4 py-2"
                     disabled={loading}
                   >
-                    Save Changes
+                    Change Password
                   </button>
                 </div>
               </form>
@@ -334,10 +373,29 @@ export const Settings = () => {
           )}
 
           {/* ACADEMY DETAILS TAB */}
-          {activeTab === "institution" && isAdmin && (
+          {activeTab === "institution" && canManageAccounts && (
             <div className="harmonia-card p-4">
+              <h5 className="text-white mb-2">School base password</h5>
+              <p className="text-muted-custom" style={{ fontSize: "0.85rem" }}>
+                New coach and student accounts start with this password and must change it at first sign-in.
+                Changing it affects accounts created from now on; existing passwords are not reset.
+              </p>
+              <form onSubmit={handleSaveBasePassword} noValidate className="row g-3 mb-4">
+                <div className="col-md-5 d-flex flex-column">
+                  <label className="harmonia-label" htmlFor="base-pw">New base password</label>
+                  <input id="base-pw" type="password" autoComplete="new-password" className="harmonia-input" value={basePassword} onChange={(e) => setBasePassword(e.target.value)} />
+                </div>
+                <div className="col-md-5 d-flex flex-column">
+                  <label className="harmonia-label" htmlFor="base-pw-confirm">Confirm base password</label>
+                  <input id="base-pw-confirm" type="password" autoComplete="new-password" className="harmonia-input" value={confirmBasePassword} onChange={(e) => setConfirmBasePassword(e.target.value)} />
+                </div>
+                <div className="col-md-2 d-flex align-items-end">
+                  <button type="submit" className="btn btn-harmonia w-100" disabled={loading}>Save</button>
+                </div>
+              </form>
+              <hr className="my-4 border-secondary border-opacity-20" />
               <h5 className="text-white mb-4">Academy &amp; System Configuration</h5>
-              
+
               <form onSubmit={handleSaveInstitution}>
                 <div className="row g-3 mb-4">
                   <div className="col-md-6 d-flex flex-column">
@@ -586,7 +644,7 @@ export const Settings = () => {
           )}
 
           {/* DATA & PRIVACY CONTROL TAB */}
-          {activeTab === "privacy" && isAdmin && (
+          {activeTab === "privacy" && canManageAccounts && (
             <div className="harmonia-card p-4">
               <h5 className="text-white mb-4">Data Governance &amp; Privacy Policies</h5>
               

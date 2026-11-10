@@ -14,10 +14,13 @@ before(async () => {
   await env.withSecurityRulesDisabled(async ctx => {
     const db = ctx.firestore();
     const batch = writeBatch(db);
-    for (const [id, data] of Object.entries({ admin: user('admin'), c1: user('coach'), c2: user('coach'), c3: user('coach', 'inst2'), manager: user('institution'), manager2: user('institution', 'inst2'), s1: user('student'), s2: user('student'), s3: user('student', 'inst2'), inactive: user('student', 'inst1', 'inactive'), deleted: user('student', null, 'deleted') })) batch.set(doc(db, 'users', id), data);
-    for (const [id, coachId, institutionId] of [['s1', 'c1', 'inst1'], ['s2', 'c2', 'inst1'], ['s3', 'c3', 'inst2'], ['inactive', 'c1', 'inst1']]) batch.set(doc(db, 'students', id), { userId: id, name: id, email: `${id}@example.test`, coachId, institutionId, status: 'active' });
-    for (const [id, institutionId] of [['c1', 'inst1'], ['c2', 'inst1'], ['c3', 'inst2']]) batch.set(doc(db, 'coaches', id), { userId: id, name: id, institutionId, status: 'active' });
+    for (const [id, data] of Object.entries({ admin: user('admin'), c1: user('coach'), c2: user('coach'), c3: user('coach', 'inst2'), manager: user('institution'), manager2: user('institution', 'inst2'), s1: user('student'), s2: user('student'), s3: user('student', 'inst2'), inactive: user('student', 'inst1', 'inactive'), deleted: user('student', null, 'deleted'),
+      pendingS: { ...user('student'), mustChangePassword: true, passwordUpdatedAtBaseline: 5 }, pendingC: { ...user('coach'), mustChangePassword: true },
+      pendingM: { ...user('institution'), mustChangePassword: true }, loner: user('student', null) })) batch.set(doc(db, 'users', id), data);
+    for (const [id, coachId, institutionId] of [['s1', 'c1', 'inst1'], ['s2', 'c2', 'inst1'], ['s3', 'c3', 'inst2'], ['inactive', 'c1', 'inst1'], ['pendingS', 'c1', 'inst1'], ['loner', null, null]]) batch.set(doc(db, 'students', id), { userId: id, name: id, email: `${id}@example.test`, coachId, institutionId, status: 'active' });
+    for (const [id, institutionId] of [['c1', 'inst1'], ['c2', 'inst1'], ['c3', 'inst2'], ['pendingC', 'inst1']]) batch.set(doc(db, 'coaches', id), { userId: id, name: id, institutionId, status: 'active' });
     for (const id of ['s1', 's2', 's3']) batch.set(doc(db, 'practiceSessions', id), { studentId: id, institutionId: id === 's3' ? 'inst2' : 'inst1', verdictStatus: 'aiPending', accuracyScore: 80, toneScore: 85 });
+    batch.set(doc(db, 'institutions', 'inst1'), { name: 'School 1', status: 'active', basePasswordSet: true });
     batch.set(doc(db, 'coachAssessments', 'assessment1'), { studentId: 's1', coachId: 'c1', status: 'draft', updatedAt: 1 });
     await batch.commit();
   });
@@ -48,24 +51,60 @@ test('signed-out clients cannot read private users or roster', async () => {
   await assertFails(getDoc(doc(db, 'users', 's1')));
   await assertFails(getDocs(collection(db, 'students')));
 });
-test('independent registration atomically creates matching profiles', async () => { await assertSucceeds(independentSignup('new1')); });
-test('registration rejects staff role and extra privileged fields', async () => {
+test('public and student self-provisioning is denied, including the former Android signup shape', async () => {
+  await assertFails(independentSignup('new1'));
   await assertFails(independentSignup('newadmin', { role: 'admin' }));
-  await assertFails(independentSignup('newpriv', { coachId: 'c1' }));
-});
-test('registration rejects self-assigned institution and coach', async () => {
   await assertFails(independentSignup('newinst', { institutionId: 'inst1' }, { institutionId: 'inst1' }));
-  await assertFails(independentSignup('newcoach', {}, { coachId: 'c1' }));
-});
-test('registration rejects partial, wrong UID and wrong email profiles', async () => {
   await assertFails(setDoc(doc(dbFor('partial'), 'users', 'partial'), { uid: 'partial', email: 'partial@example.test', role: 'student', status: 'active', institutionId: null }));
-  await assertFails(independentSignup('wronguid', {}, { userId: 'someone-else' }));
-  await assertFails(independentSignup('wrongemail', { email: 'other@example.test' }));
 });
-test('identical registration retry is safe; privilege changes and deleted-user re-enrollment fail', async () => {
-  await assertSucceeds(independentSignup('new1'));
-  await assertFails(independentSignup('new1', { role: 'coach' }));
-  await assertFails(independentSignup('deleted'));
+test('pending users read only their own onboarding profile; protected data stays denied', async () => {
+  for (const id of ['pendingS', 'pendingC', 'pendingM']) {
+    const db = dbFor(id);
+    await assertSucceeds(getDoc(doc(db, 'users', id)));
+    await assertFails(getDoc(doc(db, 'appConfig', 'audio')));
+    await assertFails(getDoc(doc(db, 'institutions', 'inst1')));
+    await assertFails(getDocs(query(collection(db, 'exercises'), where('institutionId', '==', 'inst1'))));
+    await assertFails(getDocs(query(collection(db, 'students'), where('institutionId', '==', 'inst1'))));
+  }
+  const student = dbFor('pendingS');
+  await assertFails(getDoc(doc(student, 'students', 'pendingS')));
+  await assertFails(setDoc(doc(student, 'practiceSessions', 'pending-session'), { studentId: 'pendingS', institutionId: 'inst1', verdictStatus: 'aiPending' }));
+  await assertFails(setDoc(doc(student, 'students', 'pendingS', 'practiceAttempts', 'a1'), { studentId: 'pendingS' }));
+  await assertFails(getDoc(doc(dbFor('pendingC'), 'students', 's1')));
+});
+test('onboarding fields cannot be cleared or forged by any client, including administrators', async () => {
+  await assertFails(updateDoc(doc(dbFor('pendingS'), 'users', 'pendingS'), { mustChangePassword: false }));
+  await assertFails(updateDoc(doc(dbFor('pendingS'), 'users', 'pendingS'), { passwordUpdatedAtBaseline: 0 }));
+  await assertFails(updateDoc(doc(dbFor('manager'), 'users', 'pendingS'), { mustChangePassword: false }));
+  await assertFails(updateDoc(doc(dbFor('admin'), 'users', 'pendingS'), { mustChangePassword: false }));
+  await assertFails(updateDoc(doc(dbFor('admin'), 'users', 's1'), { mustChangePassword: true }));
+  await assertSucceeds(updateDoc(doc(dbFor('s1'), 'users', 's1'), { firstName: 'Renamed' }));
+});
+test('unenrolled students cannot reach normal data until a school enrolls them', async () => {
+  const db = dbFor('loner');
+  await assertSucceeds(getDoc(doc(db, 'users', 'loner')));
+  await assertFails(getDoc(doc(db, 'students', 'loner')));
+  await assertFails(setDoc(doc(db, 'practiceSessions', 'loner-session'), { studentId: 'loner', institutionId: null, verdictStatus: 'aiPending' }));
+});
+test('school base-password secrets are never readable or writable by clients', async () => {
+  for (const id of ['admin', 'manager', 's1']) {
+    await assertFails(getDoc(doc(dbFor(id), 'schoolSecrets', 'inst1')));
+    await assertFails(setDoc(doc(dbFor(id), 'schoolSecrets', 'inst1'), { ciphertext: 'x' }));
+  }
+  await assertFails(updateDoc(doc(dbFor('manager'), 'institutions', 'inst1'), { basePasswordSet: false }));
+  await assertSucceeds(updateDoc(doc(dbFor('manager'), 'institutions', 'inst1'), { name: 'Renamed School' }));
+  await assertFails(updateDoc(doc(dbFor('manager2'), 'institutions', 'inst1'), { name: 'Hijacked' }));
+});
+test('school administrators manage only their own roster and cannot approve advancement', async () => {
+  await assertSucceeds(updateDoc(doc(dbFor('manager'), 'students', 's1'), { coachId: 'c2' }));
+  await assertSucceeds(updateDoc(doc(dbFor('manager'), 'students', 's1'), { coachId: 'c1' }));
+  await assertSucceeds(updateDoc(doc(dbFor('manager'), 'users', 'c2'), { status: 'inactive' }));
+  await assertSucceeds(updateDoc(doc(dbFor('manager'), 'users', 'c2'), { status: 'active' }));
+  await assertFails(updateDoc(doc(dbFor('manager'), 'users', 'c2'), { email: 'changed@example.test' }));
+  await assertFails(updateDoc(doc(dbFor('manager'), 'students', 's3'), { status: 'inactive' }));
+  await assertFails(updateDoc(doc(dbFor('manager2'), 'users', 's1'), { status: 'inactive' }));
+  await assertFails(updateDoc(doc(dbFor('manager'), 'practiceSessions', 's2'), { coachVerdict: 'Good stability', coachFeedback: 'x',
+    coachPitchScore: null, coachToneScore: null, verdictStatus: 'reviewed', advancementDecision: 'approved', reviewedBy: 'manager', reviewedAt: serverTimestamp() }));
 });
 test('student can read own profile and cannot read another student', async () => {
   await assertSucceeds(getDoc(doc(dbFor('s1'), 'students', 's1')));
@@ -79,7 +118,7 @@ test('student cannot change role, status, membership or coach assignment', async
 });
 test('coach can query assigned roster with institution constraint', async () => {
   const snap = await assertSucceeds(getDocs(query(collection(dbFor('c1'), 'students'), where('coachId', '==', 'c1'), where('institutionId', '==', 'inst1'))));
-  assert.equal(snap.size, 2);
+  assert.equal(snap.size, 3);
 });
 test('coach cannot use broad list, wrong institution or another coach roster', async () => {
   const db = dbFor('c1');
@@ -113,13 +152,13 @@ test('admin and institution-manager session queries remain usable and scoped', a
 test('student session writes cannot forge another institution', async () => {
   await assertFails(setDoc(doc(dbFor('s1'), 'practiceSessions', 'forged-institution'), { studentId: 's1', institutionId: 'inst2', verdictStatus: 'aiPending' }));
 });
-test('manager can create a coach in own institution but cannot create an admin', async () => {
+test('no client, including staff, can create account profiles directly', async () => {
   const db = dbFor('manager'); const batch = writeBatch(db);
   batch.set(doc(db, 'users', 'managed-coach'), user('coach'));
   batch.set(doc(db, 'coaches', 'managed-coach'), { userId: 'managed-coach', institutionId: 'inst1', status: 'active', name: 'Coach' });
-  await assertSucceeds(batch.commit());
-  await assertFails(setDoc(doc(db, 'users', 'managed-admin'), user('admin')));
-  await assertFails(setDoc(doc(db, 'users', 'foreign-coach'), user('coach', 'inst2')));
+  await assertFails(batch.commit());
+  await assertFails(setDoc(doc(dbFor('admin'), 'users', 'admin-made'), user('coach')));
+  await assertFails(setDoc(doc(dbFor('admin'), 'students', 'admin-made'), { userId: 'admin-made', institutionId: 'inst1', status: 'active' }));
 });
 test('staff cannot assign a coach from another institution', async () => {
   await assertFails(updateDoc(doc(dbFor('admin'), 'students', 's1'), { coachId: 'c3' }));
