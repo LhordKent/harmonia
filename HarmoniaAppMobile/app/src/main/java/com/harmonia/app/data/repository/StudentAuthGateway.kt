@@ -73,10 +73,23 @@ class FirebaseStudentAuthGateway(
     private suspend fun load(user: FirebaseUser): StudentSession = online {
         val profile = firestore.collection("users").document(user.uid).get(Source.SERVER).await().data
         val state = onboardingState(profile)
-        val student = if (state == AuthState.Ready) {
+        val student = if (state == AuthState.Ready) readWhenAccessSettles {
             firestore.collection("students").document(user.uid).get(Source.SERVER).await().data
         } else null
         verifiedStudentProfile(user.uid, user.email ?: "", profile, student)
+    }
+
+    /** Right after setup completes, Firestore may refuse protected reads for a moment; retry briefly. */
+    private suspend fun <T> readWhenAccessSettles(block: suspend () -> T): T {
+        repeat(5) { attempt ->
+            try {
+                return block()
+            } catch (e: FirebaseFirestoreException) {
+                if (e.code != FirebaseFirestoreException.Code.PERMISSION_DENIED) throw e
+                kotlinx.coroutines.delay(250L * (attempt + 1))
+            }
+        }
+        return block()
     }
 
     private suspend fun token(): String = online {

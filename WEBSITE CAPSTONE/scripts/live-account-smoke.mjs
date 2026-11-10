@@ -1,121 +1,196 @@
-// Real SDK/API smoke test. Creates isolated fixtures and removes exactly those fixtures in finally.
+// Live rehearsal of school-managed accounts against the real project and deployed functions.
+// Creates isolated, clearly labelled fixtures (two temporary schools, a temporary platform admin and
+// accounts provisioned through the accounts service) and removes exactly those fixtures in finally.
+// Requires the separately authorized Firebase CLI owner login. Never run against another client's data.
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, deleteUser } from 'firebase/auth';
-import { doc, getDocFromServer, getDocs, collection, writeBatch, setLogLevel } from 'firebase/firestore';
+import { createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut } from 'firebase/auth';
+import { doc, getDocFromServer, getDocs, setDoc, collection, query, where, setLogLevel } from 'firebase/firestore';
 import owner from './firebase-owner.cjs';
 import { auth, db } from '../src/firebase/config.js';
-import { createAccountAuth } from '../src/firebase/auth.js';
+import * as accounts from '../src/firebase/accountsService.js';
 import * as service from '../src/firebase/firestore.js';
-import { requireWebProfile } from '../src/firebase/access.js';
+import { onboardingState, requireWebProfile } from '../src/firebase/access.js';
 
-if (process.env.HARMONIA_EMULATOR_PROJECT) throw new Error('This smoke test targets the confirmed live Harmonia project.');
+if (process.env.HARMONIA_EMULATOR_PROJECT) throw new Error('This rehearsal targets the confirmed live Harmonia project.');
 setLogLevel('silent');
 const client = await owner.ownerClient();
+const AUDIO = 'https://ztrnmbtdaruyffjqjejz.supabase.co/functions/v1/audio';
 const stamp = Date.now().toString(36);
-const institutionId = `demo_smoke_${stamp}`;
-const password = randomBytes(24).toString('base64url') + '9!aA';
-const identities = [];
-const paths = new Set([`institutions/${institutionId}`]);
+const mail = label => `harmonia-rehearsal-${stamp}-${label}@example.test`;
+const secret = () => randomBytes(18).toString('base64url') + '9!aA';
+const basePassword = secret();
+const uids = new Set(); const paths = new Set(); const audioRefs = [];
 const checks = [];
+async function step(label, promise) { try { return await promise; } catch (e) { e.message = `${label}: ${e.message}`; throw e; } }
 async function check(name, fn) { await fn(); checks.push(name); console.log(`PASS: ${name}`); }
-async function provision(label, role, coachId = null) {
-  const email = `harmonia-smoke-${stamp}-${label}@example.test`;
-  const save = u => {
-    identities.push(u); paths.add(`users/${u.uid}`); paths.add(`${role === 'coach' ? 'coaches' : 'students'}/${u.uid}`);
-    return role === 'coach'
-      ? service.createCoach({ userId: u.uid, name: 'Smoke Coach', email, institutionId, status: 'active' })
-      : service.createStudent({ userId: u.uid, name: 'Smoke Student', email, institutionId, coachId, status: 'active' });
-  };
-  return createAccountAuth(email, password, save);
+const signIn = (email, password) => signInWithEmailAndPassword(auth, email, password);
+const denied = p => assert.rejects(p, /permission/i);
+const code = async (p, expected) => assert.rejects(p, e => e.code === expected || assert.fail(`${e.code}: ${e.message}`));
+const profile = async uid => (await getDocFromServer(doc(db, 'users', uid))).data();
+function track(account, role, schoolId) {
+  uids.add(account.uid); paths.add(`users/${account.uid}`);
+  if (role === 'coach') paths.add(`coaches/${account.uid}`);
+  if (role === 'student') paths.add(`students/${account.uid}`);
+  if (schoolId) { paths.add(`institutions/${schoolId}`); paths.add(`schoolSecrets/${schoolId}`); }
 }
-let failure, independent;
+async function audio(action, query, body) {
+  const token = await auth.currentUser.getIdToken();
+  const response = await fetch(`${AUDIO}?action=${action}&${query}`, { method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'audio/wav' }, body });
+  return { status: response.status, body: await response.json().catch(() => ({})) };
+}
+async function changeAndReauth(email, current, next) {
+  await accounts.changeAccountPassword(current, next);
+  await signIn(email, next);
+  // Mirror the clients: confirm protected access has settled before continuing.
+  await accounts.waitForProtectedAccess(() => getDocFromServer(doc(db, 'appConfig', 'audio')));
+}
+
+let failure;
+const pw = { admin: secret(), nora: secret(), carl: secret(), sam: secret(), ray: secret() };
+const ctx = {};
 try {
-  const admin = (await createUserWithEmailAndPassword(auth, `harmonia-smoke-${stamp}-admin@example.test`, password)).user;
-  identities.push(admin); paths.add(`users/${admin.uid}`);
+  const adminUser = (await createUserWithEmailAndPassword(auth, mail('platform-admin'), pw.admin)).user;
+  uids.add(adminUser.uid); paths.add(`users/${adminUser.uid}`);
   await client.db.post(`/projects/${owner.PROJECT}/databases/(default)/documents:commit`, { writes: [
-    owner.createWrite(`users/${admin.uid}`, { role: 'admin', status: 'active', institutionId, firstName: 'Smoke', lastName: 'Admin', email: admin.email }),
-    owner.createWrite(`institutions/${institutionId}`, { name: 'Temporary smoke-test institution', status: 'active' })
+    owner.createWrite(`users/${adminUser.uid}`, { role: 'admin', status: 'active', institutionId: null, name: 'Rehearsal Platform Admin', email: adminUser.email }),
   ] });
-  await check('real admin login and authoritative web profile', async () => {
-    await signInWithEmailAndPassword(auth, admin.email, password);
-    assert.equal(requireWebProfile(await service.getUserProfile(admin.uid)).role, 'admin');
+
+  await check('1. platform admin creates a school and receives a temporary password for its administrator', async () => {
+    await signIn(adminUser.email, pw.admin);
+    assert.equal(requireWebProfile(await profile(adminUser.uid)).role, 'admin');
+    const result = await accounts.createSchool({ requestId: accounts.newRequestId(), name: `Rehearsal North ${stamp}`,
+      basePassword, adminName: 'Nora Rehearsal', adminEmail: mail('nora') });
+    ctx.north = result.schoolId; ctx.nora = result.account.uid; track(result.account, 'institution', ctx.north);
+    assert.equal(result.account.temporaryPassword, basePassword);
+    assert.equal(auth.currentUser.uid, adminUser.uid);
+    const school = await getDocFromServer(doc(db, 'institutions', ctx.north));
+    assert.equal(school.data().basePasswordSet, true);
+    await denied(getDocFromServer(doc(db, 'schoolSecrets', ctx.north)));
   });
-  const coach = await provision('coach', 'coach');
-  const assigned = await provision('assigned', 'student', coach.uid);
-  const unrelated = await provision('unrelated', 'student');
-  await check('staff provisioning preserves admin identity and complete roster', async () => {
-    assert.equal(auth.currentUser.uid, admin.uid);
-    assert.equal((await service.getStudents(institutionId)).length, 2);
-    assert.equal((await service.getCoaches(institutionId)).length, 1);
+
+  await check('1. pending school administrator is confined until changing the temporary password', async () => {
+    await step('nora sign-in', signIn(mail('nora'), basePassword));
+    assert.equal(onboardingState(await step('nora reads own profile', profile(ctx.nora))), 'passwordChangeRequired');
+    await denied(getDocFromServer(doc(db, 'institutions', ctx.north)));
+    await code(accounts.createSchoolAccount({ role: 'coach', name: 'Early', email: mail('early') }), 'SETUP_REQUIRED');
+    await code(accounts.changeAccountPassword('wrong-password', pw.nora), 'WRONG_PASSWORD');
+    await code(accounts.changeAccountPassword(basePassword, basePassword), 'SAME_PASSWORD');
+    await code(accounts.changeAccountPassword(basePassword, 'short'), 'WEAK_PASSWORD');
+    await step('nora change+reauth', changeAndReauth(mail('nora'), basePassword, pw.nora));
+    assert.equal(onboardingState(await step('nora profile after change', profile(ctx.nora))), 'ready');
+    // Same brief wait the clients apply after setup completes.
+    assert.ok((await step('nora reads own school', accounts.waitForProtectedAccess(() => getDocFromServer(doc(db, 'institutions', ctx.north))))).exists());
+    await assert.rejects(signIn(mail('nora'), basePassword));
+    await signIn(mail('nora'), pw.nora);
   });
-  await check('coach sees only assigned student through actual application services', async () => {
-    await signInWithEmailAndPassword(auth, coach.email, password);
-    const viewer = { id: coach.uid, role: 'coach', institutionId };
-    assert.deepEqual((await service.getStudents(institutionId, viewer)).map(s => s.id), [assigned.uid]);
-    assert.equal((await service.getCoaches(institutionId, viewer)).length, 1);
-    assert.equal((await service.getSessions(institutionId, viewer)).length, 0);
-    await assert.rejects(getDocFromServer(doc(db, 'students', unrelated.uid)), /permission/i);
-    await assert.rejects(getDocs(collection(db, 'students')), /permission/i);
+
+  await check('2. school administrator creates a coach and student who start pending', async () => {
+    const coach = await accounts.createSchoolAccount({ role: 'coach', name: 'Carl Rehearsal', email: mail('carl') });
+    track(coach, 'coach'); ctx.carl = coach.uid;
+    const student = await accounts.createSchoolAccount({ role: 'student', name: 'Sam Rehearsal', email: mail('sam'), coachId: coach.uid });
+    track(student, 'student'); ctx.sam = student.uid;
+    assert.equal(student.temporaryPassword, basePassword);
+    const roster = await service.getStudents(ctx.north, { role: 'institution' });
+    assert.deepEqual(roster.map(s => s.id), [student.uid]);
+    assert.equal((await service.getCoaches(ctx.north, { role: 'institution' })).length, 1);
   });
-  await check('student login obtains the correct mobile profile and rejects web staff access', async () => {
-    await signInWithEmailAndPassword(auth, assigned.email, password);
-    const user = await service.getUserProfile(assigned.uid);
-    const student = (await getDocFromServer(doc(db, 'students', assigned.uid))).data();
-    assert.equal(user.status, 'active'); assert.equal(student.institutionId, institutionId);
-    assert.equal(student.coachId, coach.uid);
-    assert.throws(() => requireWebProfile(user), /mobile/i);
+
+  await check('2/5. pending student cannot read data, write practice or upload audio (direct calls)', async () => {
+    await signIn(mail('sam'), basePassword);
+    assert.equal(onboardingState(await profile(ctx.sam)), 'passwordChangeRequired');
+    await denied(getDocFromServer(doc(db, 'students', ctx.sam)));
+    await denied(setDoc(doc(db, 'practiceSessions', `rehearsal-${stamp}-pending`), { studentId: ctx.sam, institutionId: ctx.north, verdictStatus: 'aiPending' }));
+    await denied(setDoc(doc(db, 'users', ctx.sam), { mustChangePassword: false }, { merge: true }));
+    const upload = await audio('upload', `kind=attempts&id=rehearsal${stamp}pending`, 'RIFFpending');
+    assert.equal(upload.status, 403);
   });
-  await check('wrong password is rejected by live Firebase Auth', async () => {
-    await assert.rejects(signInWithEmailAndPassword(auth, assigned.email, 'incorrect-password'));
+
+  await check('2/8. after changing passwords, the student records/uploads and the coach reviews', async () => {
+    await changeAndReauth(mail('sam'), basePassword, pw.sam);
+    const sessionId = `rehearsal-${stamp}-attempt`; paths.add(`practiceSessions/${sessionId}`);
+    const upload = await audio('upload', `kind=attempts&id=rehearsal${stamp}ok`, 'RIFFrehearsal-audio-bytes');
+    assert.equal(upload.status, 200, JSON.stringify(upload.body));
+    audioRefs.push(upload.body.audioRef);
+    await setDoc(doc(db, 'practiceSessions', sessionId), { studentId: ctx.sam, institutionId: ctx.north, verdictStatus: 'aiPending',
+      accuracyScore: 72, toneScore: 68, audioRecordingUrl: upload.body.audioRef, createdAt: Date.now() });
+
+    await signIn(mail('carl'), basePassword);
+    await denied(getDocs(query(collection(db, 'students'), where('coachId', '==', ctx.carl), where('institutionId', '==', ctx.north))));
+    await changeAndReauth(mail('carl'), basePassword, pw.carl);
+    const viewer = { id: ctx.carl, role: 'coach', institutionId: ctx.north };
+    assert.deepEqual((await service.getStudents(ctx.north, viewer)).map(s => s.id), [ctx.sam]);
+    const playback = await audio('playback', `ref=${encodeURIComponent(upload.body.audioRef)}`);
+    assert.equal(playback.status, 200);
+    await service.updateSession(sessionId, { coachVerdict: 'Good stability', coachFeedback: 'Rehearsal feedback.', coachPitchScore: 75, coachToneScore: 70 });
+
+    await signIn(mail('sam'), pw.sam);
+    const reviewed = (await getDocFromServer(doc(db, 'practiceSessions', sessionId))).data();
+    assert.equal(reviewed.coachFeedback, 'Rehearsal feedback.');
+    assert.equal(reviewed.accuracyScore, 72);
   });
-  await check('deactivation synchronizes profiles and blocks student data access', async () => {
-    await signInWithEmailAndPassword(auth, admin.email, password);
-    await service.deactivateStudent(assigned.uid);
-    assert.equal((await service.getUserProfile(assigned.uid)).status, 'inactive');
-    await signInWithEmailAndPassword(auth, assigned.email, password);
-    assert.equal((await service.getUserProfile(assigned.uid)).status, 'inactive');
-    await assert.rejects(getDocFromServer(doc(db, 'students', assigned.uid)), /permission/i);
+
+  await check('4. an out-of-band password change (as after email recovery) completes setup only after re-authentication', async () => {
+    await signIn(mail('nora'), pw.nora);
+    const ray = await accounts.createSchoolAccount({ role: 'student', name: 'Ray Rehearsal', email: mail('ray') });
+    track(ray, 'student'); ctx.ray = ray.uid;
+    await signIn(mail('ray'), basePassword);
+    await code(accounts.completeAccountOnboarding(), 'PASSWORD_NOT_CHANGED');
+    // The owner session stands in for the emailed reset link (no inbox exists for example.test).
+    await client.identity.post(`/v1/projects/${owner.PROJECT}/accounts:update`, { localId: ray.uid, password: pw.ray });
+    await signIn(mail('ray'), pw.ray);
+    assert.equal((await accounts.completeAccountOnboarding()).state, 'ready');
+    assert.equal(onboardingState(await profile(ray.uid)), 'ready');
   });
-  await check('live mobile-shaped independent signup creates both profiles', async () => {
-    await signOut(auth);
-    const u = (await createUserWithEmailAndPassword(auth, `harmonia-smoke-${stamp}-independent@example.test`, password)).user;
-    independent = u;
-    identities.push(u); paths.add(`users/${u.uid}`); paths.add(`students/${u.uid}`);
-    const batch = writeBatch(db);
-    batch.set(doc(db, 'users', u.uid), { uid: u.uid, firstName: 'Smoke', lastName: 'Independent', email: u.email, role: 'student', status: 'active', institutionId: null, createdAt: 1, updatedAt: 1 });
-    batch.set(doc(db, 'students', u.uid), { id: u.uid, userId: u.uid, name: 'Smoke Independent', fullName: 'Smoke Independent', firstName: 'Smoke', lastName: 'Independent', email: u.email, studentType: 'independent', status: 'active', institutionId: null, createdAt: 1, updatedAt: 1 });
-    await batch.commit();
-    assert.equal((await service.getUserProfile(u.uid)).role, 'student');
-    assert.equal((await getDocFromServer(doc(db, 'students', u.uid))).data().institutionId, null);
+
+  await check('6. one school cannot provision into or read another school', async () => {
+    await signIn(adminUser.email, pw.admin);
+    const south = await accounts.createSchool({ requestId: accounts.newRequestId(), name: `Rehearsal South ${stamp}`,
+      basePassword: secret(), adminName: 'Sol Rehearsal', adminEmail: mail('sol') });
+    ctx.south = south.schoolId; track(south.account, 'institution', ctx.south);
+    await signIn(mail('nora'), pw.nora);
+    await code(accounts.createSchoolAccount({ role: 'student', name: 'Intruder', email: mail('intruder'), schoolId: ctx.south }), 'FORBIDDEN');
+    await code(accounts.setSchoolBasePassword(ctx.south, secret()), 'FORBIDDEN');
+    await denied(getDocFromServer(doc(db, 'institutions', ctx.south)));
   });
-  await check('admin enrolls an independent signup and the assigned coach can see it', async () => {
-    await signInWithEmailAndPassword(auth, admin.email, password);
-    assert.ok((await service.getIndependentStudents()).some(s => s.id === independent.uid));
-    await service.enrollStudent(independent.uid, institutionId, coach.uid);
-    assert.equal((await service.getUserProfile(independent.uid)).institutionId, institutionId);
-    await signInWithEmailAndPassword(auth, coach.email, password);
-    assert.ok((await service.getStudents(institutionId, { id: coach.uid, role: 'coach', institutionId })).some(s => s.id === independent.uid));
+
+  await check('7. duplicate email and lost-response retry are recoverable and never reset an account', async () => {
+    await code(accounts.createSchoolAccount({ role: 'student', name: 'Dup', email: mail('sam').toUpperCase() }), 'EMAIL_EXISTS');
+    await signIn(mail('sam'), pw.sam);
+  });
+
+  await check('5. an older client cannot self-register a profile', async () => {
+    const selfUser = (await createUserWithEmailAndPassword(auth, mail('self-signup'), secret())).user;
+    uids.add(selfUser.uid); paths.add(`users/${selfUser.uid}`); paths.add(`students/${selfUser.uid}`);
+    await denied(setDoc(doc(db, 'users', selfUser.uid), { uid: selfUser.uid, role: 'student', status: 'active', institutionId: null, email: selfUser.email }));
+    await code(accounts.callAccounts('status'), 'NO_PROFILE');
   });
 } catch (error) {
   failure = error;
 } finally {
-  const cleanupFailures = [];
-  // Only document paths and Auth objects created in this invocation are eligible for cleanup.
+  const cleanup = [];
   try {
-    await client.db.post(`/projects/${owner.PROJECT}/databases/(default)/documents:commit`, { writes: [...paths].map(p => ({ delete: `${owner.base}/${p}` })) });
-  } catch (error) { cleanupFailures.push(`Fixture document cleanup: ${error.message}`); }
-  for (const identity of identities) {
-    try { await deleteUser(identity); } catch (error) { cleanupFailures.push(`Fixture identity cleanup: ${error.code || error.message}`); }
+    if (audioRefs.length) {
+      // The temporary platform admin is the only account allowed to delete audio objects.
+      await signIn(mail('platform-admin'), pw.admin);
+      for (const ref of audioRefs) {
+        const result = await audio('delete', `ref=${encodeURIComponent(ref)}`);
+        if (result.status !== 200) cleanup.push(`audio ${result.status}`);
+      }
+    }
+  } catch (e) { cleanup.push(`audio: ${e.message}`); }
+  await signOut(auth).catch(() => {});
+  try {
+    const writes = [...paths].map(p => ({ delete: `${owner.base}/${p}` }));
+    if (writes.length) await client.db.post(`/projects/${owner.PROJECT}/databases/(default)/documents:commit`, { writes });
+  } catch (e) { cleanup.push(`documents: ${e.message}`); }
+  for (const uid of uids) {
+    try { await client.identity.post(`/v1/projects/${owner.PROJECT}/accounts:delete`, { localId: uid }); }
+    catch (e) { cleanup.push(`identity ${uid}: ${e.message}`); }
   }
-  await signOut(auth);
-  if (cleanupFailures.length) {
-    const backup = owner.privateBackup('smoke-cleanup', { createdUids: identities.map(u => u.uid), paths: [...paths], errors: cleanupFailures });
-    console.error(`Fixture cleanup needs attention. Private manifest: ${backup}`);
-    failure ||= new Error(cleanupFailures.join('; '));
-  } else console.log(`PASS: cleaned ${identities.length} temporary Auth identities and ${paths.size} fixture document paths`);
+  console.log(JSON.stringify({ passed: checks.length, removedDocuments: paths.size, removedIdentities: uids.size,
+    removedAudio: audioRefs.length, cleanupProblems: cleanup }, null, 2));
+  if (failure) { console.error('FAILED:', failure.stack); process.exitCode = 1; }
+  if (cleanup.length) process.exitCode = 1;
 }
-if (failure) { console.error(failure.message); process.exitCode = 1; }
-else console.log(`Live smoke test: ${checks.length} behavior checks passed.`);
-// Firebase's Node transport can retain idle sockets after all operations finish.
-await (await import('firebase/firestore')).terminate(db);

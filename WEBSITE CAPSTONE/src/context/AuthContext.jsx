@@ -1,10 +1,11 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { onAuthStateChanged } from "firebase/auth";
-import { auth } from "../firebase/config";
+import { auth, db } from "../firebase/config";
+import { doc, getDocFromServer } from "firebase/firestore";
 import { loginUser, logoutUser, resetUserPassword, reauthenticateWithNewPassword } from "../firebase/auth";
 import { getUserProfile, updateCoach } from "../firebase/firestore";
 import { requireWebProfile, onboardingState } from "../firebase/access";
-import { changeAccountPassword, completeAccountOnboarding } from "../firebase/accountsService";
+import { changeAccountPassword, completeAccountOnboarding, waitForProtectedAccess } from "../firebase/accountsService";
 
 const AuthContext = createContext();
 
@@ -31,6 +32,10 @@ async function loadSession(user) {
     } catch {
       // Not changed yet (or service unreachable): stay on the setup screen.
     }
+  }
+  if (state === "ready") {
+    // Just after setup completes, Firestore may refuse protected reads for a moment; wait it out.
+    await waitForProtectedAccess(() => getDocFromServer(doc(db, "appConfig", "audio"))).catch(() => {});
   }
   return { profile: { ...profile, uid: user.uid, id: user.uid }, state };
 }

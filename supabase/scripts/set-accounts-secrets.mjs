@@ -39,7 +39,9 @@ if (!hasEncryptionKey) lines.push(`SCHOOL_PASSWORD_KEY='${crypto.randomBytes(32)
 const envFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'harmonia-secrets-')), 'accounts.env');
 try {
   fs.writeFileSync(envFile, lines.join('\n') + '\n', { mode: 0o600 });
-  const result = supabase(['secrets', 'set', '--env-file', envFile], true);
+  // --yes skips the CLI's production confirmation (for an already approved, non-interactive run).
+  const confirm = process.argv.includes('--yes') ? ['--yes'] : [];
+  const result = supabase(['secrets', 'set', '--env-file', envFile, ...confirm], true);
   if (result.status !== 0) {
     console.error('Setting secrets failed; nothing else was changed.');
     process.exitCode = 1;

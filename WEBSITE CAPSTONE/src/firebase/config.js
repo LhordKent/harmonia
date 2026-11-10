@@ -3,7 +3,16 @@ import { getAuth, connectAuthEmulator } from "firebase/auth";
 import { getFirestore, connectFirestoreEmulator } from "firebase/firestore";
 import { getAnalytics, isSupported } from "firebase/analytics";
 
-const emulatorProject = globalThis.process?.env?.HARMONIA_EMULATOR_PROJECT;
+// Node tests set HARMONIA_EMULATOR_PROJECT; the local browser check (npm run dev:emulators) sets the
+// VITE_ equivalents. Production builds set neither and always use the live project.
+const viteEnv = import.meta.env ?? {};
+const nodeEnv = globalThis.process?.env ?? {};
+const emulatorEnv = nodeEnv.HARMONIA_EMULATOR_PROJECT ? nodeEnv : {
+  HARMONIA_EMULATOR_PROJECT: viteEnv.VITE_EMULATOR_PROJECT,
+  FIREBASE_AUTH_EMULATOR_HOST: viteEnv.VITE_AUTH_EMULATOR_HOST,
+  FIRESTORE_EMULATOR_HOST: viteEnv.VITE_FIRESTORE_EMULATOR_HOST,
+};
+const emulatorProject = emulatorEnv.HARMONIA_EMULATOR_PROJECT;
 if (emulatorProject && !emulatorProject.startsWith("demo-")) throw new Error("Tests require a demo- emulator project.");
 const firebaseConfig = {
   apiKey: "AIzaSyCS6m4JybNezRKUk-Dnsv0NOR9vHCXPlMM",
@@ -21,7 +30,7 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 
 if (emulatorProject) {
-  const env = globalThis.process.env;
+  const env = emulatorEnv;
   if (!env.FIREBASE_AUTH_EMULATOR_HOST || !env.FIRESTORE_EMULATOR_HOST) throw new Error("Emulator endpoints must be explicit.");
   connectAuthEmulator(auth, `http://${env.FIREBASE_AUTH_EMULATOR_HOST}`, { disableWarnings: true });
   const [host, port] = env.FIRESTORE_EMULATOR_HOST.split(":");

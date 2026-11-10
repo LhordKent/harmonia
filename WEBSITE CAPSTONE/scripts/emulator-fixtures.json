@@ -1,0 +1,10 @@
+{
+  "_note": "Emulator-only (demo-harmonia) fixtures for `npm run dev:emulators` browser checks. Never valid on the live project.",
+  "platformAdmin": { "email": "platform-admin@local.test", "password": "Local-emulator-only-1" },
+  "browserCheck": {
+    "schoolName": "Local Browser Academy",
+    "basePassword": "Local-base-2026",
+    "schoolAdmin": { "name": "Lena Local", "email": "lena@local.test", "newPassword": "Lena-own-pass-1" },
+    "coach": { "name": "Cole Local", "email": "cole@local.test" }
+  }
+}

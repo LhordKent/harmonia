@@ -14,7 +14,8 @@ if (!env.JAVA_HOME) {
 const oldPath = Object.entries(env).find(([key]) => key.toLowerCase() === 'path')?.[1] || '';
 for (const key of Object.keys(env)) if (key.toLowerCase() === 'path') delete env[key];
 env.Path = [path.dirname(process.execPath), ...(env.JAVA_HOME ? [path.join(env.JAVA_HOME, 'bin')] : []), oldPath].join(path.delimiter);
-const command = process.argv.includes('--browser') ? 'node scripts/browser-ai-smoke.mjs' : 'node --test --test-concurrency=1 tests/accounts.rules.test.mjs tests/accounts.services.test.mjs tests/accounts.integration.test.mjs tests/grading.contract.test.mjs';
+process.chdir(path.join(__dirname, '..'));
+const command = process.argv.includes('--dev') ? 'node scripts/dev-emulator-stack.mjs' : process.argv.includes('--browser') ? 'node scripts/browser-ai-smoke.mjs' : 'node --test --test-concurrency=1 tests/accounts.rules.test.mjs tests/accounts.services.test.mjs tests/accounts.integration.test.mjs tests/grading.contract.test.mjs';
 const result = spawnSync(process.execPath, [globalCli, 'emulators:exec', '--config', 'firebase.emulators.json', '--project', 'demo-harmonia', '--only', 'auth,firestore', command], { stdio: 'inherit', env });
 if (result.error) throw result.error;
 process.exitCode = result.status ?? 1;

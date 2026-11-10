@@ -2,6 +2,7 @@ import { auth } from "./config.js";
 
 /** Public endpoint of the trusted accounts Edge Function. It holds no secrets; the caller's Firebase token authorizes each call. */
 export const ACCOUNTS_ENDPOINT = globalThis.process?.env?.HARMONIA_ACCOUNTS_ENDPOINT
+  || import.meta.env?.VITE_ACCOUNTS_ENDPOINT
   || "https://ztrnmbtdaruyffjqjejz.supabase.co/functions/v1/accounts";
 
 export class AccountsError extends Error {
@@ -34,6 +35,21 @@ export const setSchoolBasePassword = (schoolId, basePassword) => callAccounts("s
 export const createSchoolAccount = (account) => callAccounts("createAccount", account);
 export const changeAccountPassword = (currentPassword, newPassword) => callAccounts("changePassword", { currentPassword, newPassword });
 export const completeAccountOnboarding = () => callAccounts("completeOnboarding");
+
+/**
+ * Right after the backend clears the requirement, Firestore can briefly still refuse protected reads.
+ * Retry a permission denial a few times (about 4 s in total) before reporting it.
+ */
+export async function waitForProtectedAccess(probe, attempts = 6) {
+  for (let i = 0; ; i++) {
+    try {
+      return await probe();
+    } catch (error) {
+      if (!/permission/i.test(error?.code || error?.message || "") || i >= attempts - 1) throw error;
+      await new Promise(resolve => setTimeout(resolve, 250 * (i + 1)));
+    }
+  }
+}
 
 export function validateNewPassword({ currentPassword, newPassword, confirmPassword }) {
   if (!currentPassword) return "Enter your current password.";
