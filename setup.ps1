@@ -30,7 +30,19 @@ if ($Android) {
     if (-not $sdkRoot -or -not (Test-Path -LiteralPath $sdkRoot)) {
         throw 'Install Android SDK through Android Studio (including platform 37) and set ANDROID_HOME.'
     }
-    if (-not (Test-Path -LiteralPath (Join-Path $sdkRoot 'platforms\android-37'))) {
+    # Newer SDK packages use android-37.0 rather than android-37. Check metadata.
+    $platformsRoot = Join-Path $sdkRoot 'platforms'
+    $hasPlatform37 = $false
+    if (Test-Path -LiteralPath $platformsRoot) {
+        foreach ($platform in (Get-ChildItem -LiteralPath $platformsRoot -Directory)) {
+            $metadata = Join-Path $platform.FullName 'source.properties'
+            if ((Test-Path -LiteralPath $metadata) -and
+                (Select-String -LiteralPath $metadata -Pattern '^AndroidVersion.ApiLevel=37(?:\.0)?\s*$' -Quiet)) {
+                $hasPlatform37 = $true
+            }
+        }
+    }
+    if (-not $hasPlatform37) {
         throw 'Install Android SDK Platform 37 in Android Studio SDK Manager, then rerun setup.ps1 -Android.'
     }
     $localProperties = Join-Path $mobileRoot 'local.properties'
