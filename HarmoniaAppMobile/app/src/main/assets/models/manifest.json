@@ -1,0 +1,13 @@
+{
+  "name": "SwiftF0",
+  "source": "https://github.com/lars76/swift-f0",
+  "revision": "d1ba77fe5331310b778ebe126b6cb3656d41d24f",
+  "sha256": "6385e8c2ebc3872e82c9ff5946228de44cd3be77a750ea53698b7dbfe94b0a22",
+  "license": "MIT",
+  "sampleRate": 16000,
+  "hopSamples": 256,
+  "confidenceThreshold": 0.5,
+  "gradingRangeHz": [65, 1050],
+  "runtime": "onnxruntime-android:1.23.2",
+  "note": "Pitch confidence is not singing skill. Clarity/steadiness grading is experimental and is not a second trained model."
+}

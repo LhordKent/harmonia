@@ -1,0 +1,119 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // ---------------------------------------------
+    // HELPER FUNCTIONS
+    // Roles are read from /users/{uid} in Firestore (cross-service rules).
+    // ---------------------------------------------
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function uid() {
+      return request.auth.uid;
+    }
+
+    function isOwner(userId) {
+      return request.auth != null && request.auth.uid == userId;
+    }
+
+    function hasProfile() {
+      return isAuthenticated()
+        && firestore.exists(/databases/(default)/documents/users/$(request.auth.uid));
+    }
+
+    function profile() {
+      return firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isAdmin() {
+      return hasProfile() && profile().status == 'active' && profile().role == 'admin';
+    }
+
+    function isStaff() {
+      return hasProfile() && profile().status == 'active'
+        && (profile().role == 'admin' || profile().role == 'coach');
+    }
+
+    // Owner, admin, or the coach assigned to this student
+    function canReviewStudent(studentId) {
+      return isOwner(studentId)
+        || isAdmin()
+        || (isStaff()
+            && firestore.get(/databases/(default)/documents/students/$(studentId)).data.coachId == request.auth.uid);
+    }
+
+    // Max file sizes
+    function isUnder50MB() {
+      return request.resource.size < 50 * 1024 * 1024;
+    }
+
+    function isUnder5MB() {
+      return request.resource.size < 5 * 1024 * 1024;
+    }
+
+    // Allowed audio MIME types for vocal recordings
+    function isAudioFile() {
+      return request.resource.contentType.matches('audio/.*');
+    }
+
+    // Allowed image MIME types for profile photos
+    function isImageFile() {
+      return request.resource.contentType.matches('image/.*');
+    }
+
+    // ---------------------------------------------
+    // VOCAL RECORDINGS
+    // Path: /recordings/{studentId}/{sessionId}/{fileName}
+    // Uploaded by: the student (mobile app)
+    // Read by: the student, an admin, or the student's assigned coach
+    // ---------------------------------------------
+    match /recordings/{studentId}/{sessionId}/{fileName} {
+      allow write: if isAuthenticated()
+                   && isOwner(studentId)
+                   && isAudioFile()
+                   && isUnder50MB();
+
+      allow read: if canReviewStudent(studentId);
+    }
+
+    // ---------------------------------------------
+    // EXERCISE REFERENCE AUDIO
+    // Path: /exercises/{exerciseId}/{fileName}
+    // Streamed by all signed-in users; uploaded by coaches/admins only
+    // ---------------------------------------------
+    match /exercises/{exerciseId}/{fileName} {
+      allow read: if isAuthenticated();
+
+      allow write: if isStaff()
+                   && isAudioFile()
+                   && isUnder50MB();
+    }
+
+    // ---------------------------------------------
+    // PROFILE PHOTOS
+    // Path: /profiles/{userId}/{fileName}
+    // ---------------------------------------------
+    match /profiles/{userId}/{fileName} {
+      allow read: if isAuthenticated();
+
+      allow write: if isAuthenticated()
+                   && isOwner(userId)
+                   && isImageFile()
+                   && isUnder5MB();
+    }
+
+    // ---------------------------------------------
+    // EXPORTS / REPORTS
+    // Path: /exports/{institutionId}/{fileName}
+    // Read by staff only; written server side only
+    // ---------------------------------------------
+    match /exports/{institutionId}/{fileName} {
+      allow read: if isStaff();
+      allow write: if false;
+    }
+
+  }
+}

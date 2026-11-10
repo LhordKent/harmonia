@@ -1,0 +1,37 @@
+# Dependencies and generated files (recreated by setup.ps1 / build commands)
+**/node_modules/
+**/dist/
+**/build/
+**/.gradle/
+**/.kotlin/
+**/.firebase/
+**/.cxx/
+**/.externalNativeBuild/
+**/__pycache__/
+**/.idea/
+**/.DS_Store
+*.log
+*.iml
+*.apk
+*.aab
+build_output*.txt
+**/_backup_before_audit_fixes/
+/tmp/
+
+# Machine paths, private credentials, signing keys and disposable test identities
+**/local.properties
+**/.env
+**/.env.*
+!**/.env.example
+*.jks
+*.keystore
+*.p12
+*.pfx
+**/*service-account*.json
+**/*serviceAccount*.json
+**/review-e2e.local.json
+**/owner-portal-account.json
+
+# Intentionally TRACK client Firebase config, lockfiles, Gradle wrapper,
+# neural model + license, schema/migrations, tests and the final defense PDF.
+# Firebase client API keys are public project identifiers, not admin secrets.

@@ -1,0 +1,5 @@
+project_id = "harmonia-audio"
+
+[functions.audio]
+# The handler validates Firebase ID tokens with Google, then uses Firestore rules.
+verify_jwt = false

@@ -1,0 +1,216 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function owner(id) { return signedIn() && request.auth.uid == id; }
+    function profile() { return get(/databases/$(database)/documents/users/$(request.auth.uid)).data; }
+    function active() {
+      return signedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && profile().status == 'active';
+    }
+    function admin() { return active() && profile().role == 'admin'; }
+    function coach() { return active() && profile().role == 'coach'; }
+    function manager() { return active() && profile().role == 'institution'; }
+    function sameInstitution(data) {
+      return active() && profile().get('institutionId', null) != null
+        && data.get('institutionId', null) == profile().institutionId;
+    }
+    function assigned(data) {
+      return coach() && sameInstitution(data) && data.get('coachId', null) == request.auth.uid;
+    }
+    function manages(data) { return admin() || (manager() && sameInstitution(data)); }
+    function only(keys) { return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys); }
+    function activeStudent(id) {
+      return owner(id) && active() && profile().role == 'student'
+        && get(/databases/$(database)/documents/students/$(id)).data.status == 'active';
+    }
+    function canReadStudent(id) {
+      let student = get(/databases/$(database)/documents/students/$(id)).data;
+      return activeStudent(id) || manages(student) || assigned(student);
+    }
+    function validCoach(data) {
+      let coachId = data.get('coachId', null);
+      return coachId == null || (
+        get(/databases/$(database)/documents/users/$(coachId)).data.role == 'coach'
+        && get(/databases/$(database)/documents/users/$(coachId)).data.status == 'active'
+        && get(/databases/$(database)/documents/users/$(coachId)).data.institutionId == data.institutionId
+      );
+    }
+    function selfUserCreate(id) {
+      let data = request.resource.data;
+      let student = getAfter(/databases/$(database)/documents/students/$(id)).data;
+      return owner(id)
+        && data.keys().hasOnly(['uid', 'firstName', 'lastName', 'email', 'role', 'status', 'institutionId', 'createdAt', 'updatedAt'])
+        && data.uid == id && data.email == request.auth.token.email
+        && data.role == 'student' && data.status == 'active' && data.institutionId == null
+        && student.userId == id && student.email == data.email
+        && student.status == 'active' && student.institutionId == null
+        && student.get('coachId', null) == null;
+    }
+    function selfStudentCreate(id) {
+      let data = request.resource.data;
+      let user = getAfter(/databases/$(database)/documents/users/$(id)).data;
+      return owner(id) && !exists(/databases/$(database)/documents/users/$(id))
+        && data.keys().hasOnly(['id', 'userId', 'name', 'fullName', 'firstName', 'lastName', 'email', 'studentType', 'status', 'institutionId', 'coachId', 'badges', 'createdAt', 'updatedAt'])
+        && data.id == id && data.userId == id && data.email == request.auth.token.email
+        && data.status == 'active' && data.institutionId == null && data.get('coachId', null) == null
+        && data.get('badges', []).size() == 0
+        && data.studentType in ['independent', 'collaborated']
+        && user.uid == id && user.role == 'student' && user.status == 'active'
+        && user.email == data.email && user.institutionId == null;
+    }
+    function validReview() {
+      let d = request.resource.data;
+      let pitch = d.get('coachPitchScore', null);
+      let tone = d.get('coachToneScore', null);
+      return d.verdictStatus == 'reviewed' && d.reviewedBy == request.auth.uid && d.reviewedAt == request.time
+        && (d.get('advancementDecision', null) == null || (d.advancementDecision in ['approved', 'repeat']
+          && (admin() || assigned(get(/databases/$(database)/documents/students/$(resource.data.studentId)).data))))
+        && d.coachVerdict in ['Excellent accuracy', 'Good stability', 'Requires improvement']
+        && d.coachFeedback is string && d.coachFeedback.size() <= 4000
+        && ((pitch == null && tone == null) || (pitch is number && tone is number && pitch >= 0 && pitch <= 100 && tone >= 0 && tone <= 100));
+    }
+    function validAssessment() {
+      let d = request.resource.data;
+      return d.status == 'draft' || (d.status == 'finalized'
+        && d.finalVerdict in ['approved', 'needs_improvement', 'repeat_exercise', 'ready_for_next_exercise']
+        && d.finalizedAt == request.time);
+    }
+
+    match /appConfig/{id} {
+      allow read: if active();
+      allow write: if admin();
+    }
+    match /users/{id} {
+      allow get: if owner(id) || manages(resource.data);
+      allow list: if manages(resource.data);
+      allow create: if admin()
+        || (manager() && sameInstitution(request.resource.data) && request.resource.data.role in ['coach', 'student'])
+        || selfUserCreate(id);
+      allow update: if admin()
+        || (manager() && sameInstitution(resource.data) && sameInstitution(request.resource.data)
+            && resource.data.role in ['coach', 'student']
+            && request.resource.data.role == resource.data.role)
+        || (owner(id) && active() && only(['firstName', 'lastName', 'name', 'updatedAt']));
+      allow delete: if admin();
+    }
+    match /coaches/{id} {
+      allow get, list: if (owner(id) && active()) || manages(resource.data);
+      allow create: if manages(request.resource.data) && request.resource.data.userId == id
+        && getAfter(/databases/$(database)/documents/users/$(id)).data.role == 'coach'
+        && getAfter(/databases/$(database)/documents/users/$(id)).data.institutionId == request.resource.data.institutionId;
+      allow update: if (manages(resource.data) && manages(request.resource.data))
+        || (owner(id) && coach() && only(['name', 'firstName', 'lastName', 'updatedAt']));
+      allow delete: if manages(resource.data);
+    }
+    match /students/{id} {
+      allow get, list: if activeStudent(id) || manages(resource.data) || assigned(resource.data);
+      allow create: if (manages(request.resource.data) && validCoach(request.resource.data)
+          && request.resource.data.userId == id
+          && getAfter(/databases/$(database)/documents/users/$(id)).data.role == 'student'
+          && getAfter(/databases/$(database)/documents/users/$(id)).data.institutionId == request.resource.data.institutionId)
+        || selfStudentCreate(id);
+      allow update: if (manages(resource.data) && manages(request.resource.data) && validCoach(request.resource.data))
+        || (activeStudent(id) && only(['name', 'fullName', 'firstName', 'lastName', 'profilePictureUrl', 'updatedAt']));
+      allow delete: if manages(resource.data);
+
+      match /practiceAttempts/{attemptId} {
+        allow read: if canReadStudent(id);
+        allow create, update: if activeStudent(id);
+        allow delete: if admin();
+        match /analysisResult/{resultId} {
+          allow read: if canReadStudent(id);
+          allow create: if activeStudent(id)
+            && request.resource.data.verdictStatus in ['aiPending', 'noVoiceDetected', 'insufficientAudio']
+            && !('coachVerdict' in request.resource.data);
+          allow update: if (activeStudent(id) && resource.data.verdictStatus in ['aiPending', 'noVoiceDetected', 'insufficientAudio']
+              && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['verdictStatus', 'coachVerdict']))
+            || ((admin() || assigned(get(/databases/$(database)/documents/students/$(id)).data))
+              && only(['verdictStatus', 'feedbackNotes', 'coachVerdict']));
+          allow delete: if admin();
+        }
+      }
+      match /progressReports/{reportId} {
+        allow read: if canReadStudent(id);
+        allow create, update: if activeStudent(id);
+      }
+      match /achievements/{achievementId} {
+        allow read: if canReadStudent(id);
+        allow create, update: if activeStudent(id);
+      }
+      match /notifications/{notificationId} {
+        allow read: if activeStudent(id);
+        allow update: if activeStudent(id) && only(['isRead']);
+        allow create: if activeStudent(id) || manages(get(/databases/$(database)/documents/students/$(id)).data)
+          || assigned(get(/databases/$(database)/documents/students/$(id)).data);
+      }
+      match /subscriptions/{subscriptionId} { allow read: if activeStudent(id); }
+    }
+    match /practiceSessions/{id} {
+      // Transactions need to read their new, randomly named session before creating it.
+      allow get: if active() && !exists(/databases/$(database)/documents/practiceSessions/$(id));
+      allow read: if manages(resource.data) || canReadStudent(resource.data.studentId);
+      allow create: if (activeStudent(request.resource.data.studentId)
+          && request.resource.data.get('institutionId', null) == profile().get('institutionId', null)
+          && request.resource.data.verdictStatus in ['aiPending', 'noVoiceDetected', 'insufficientAudio']
+          && !request.resource.data.keys().hasAny(['coachVerdict', 'coachFeedback', 'coachPitchScore', 'coachToneScore', 'reviewedBy', 'reviewedAt', 'advancementDecision']))
+        || (manages(get(/databases/$(database)/documents/students/$(request.resource.data.studentId)).data)
+          && request.resource.data.verdictStatus in ['aiPending', 'noVoiceDetected', 'insufficientAudio']
+          && !request.resource.data.keys().hasAny(['coachVerdict', 'coachFeedback', 'coachPitchScore', 'coachToneScore', 'reviewedBy', 'reviewedAt', 'advancementDecision']));
+      allow update: if (canReadStudent(resource.data.studentId) && (admin() || coach() || manager())
+          && only(['coachVerdict', 'coachFeedback', 'coachPitchScore', 'coachToneScore', 'reviewedBy', 'reviewedAt', 'verdictStatus', 'advancementDecision'])
+          && validReview())
+        || (activeStudent(resource.data.studentId)
+          && request.resource.data == resource.data);
+      allow delete: if admin();
+    }
+    match /coachFeedback/{id} {
+      allow read: if admin() || (coach() && resource.data.coachId == request.auth.uid
+        && assigned(get(/databases/$(database)/documents/students/$(resource.data.studentId)).data));
+      allow create: if coach() && request.resource.data.coachId == request.auth.uid
+        && assigned(get(/databases/$(database)/documents/students/$(request.resource.data.studentId)).data);
+      allow update: if coach() && resource.data.coachId == request.auth.uid
+        && request.resource.data.coachId == resource.data.coachId && request.resource.data.studentId == resource.data.studentId
+        && assigned(get(/databases/$(database)/documents/students/$(resource.data.studentId)).data);
+      allow delete: if admin();
+    }
+    match /coachAssessments/{id} {
+      allow read: if (activeStudent(resource.data.studentId) && resource.data.status == 'finalized')
+        || admin() || (coach() && resource.data.coachId == request.auth.uid
+        && assigned(get(/databases/$(database)/documents/students/$(resource.data.studentId)).data));
+      allow create: if coach() && request.resource.data.coachId == request.auth.uid
+        && assigned(get(/databases/$(database)/documents/students/$(request.resource.data.studentId)).data) && validAssessment();
+      allow update: if coach() && resource.data.coachId == request.auth.uid
+        && request.resource.data.coachId == resource.data.coachId && request.resource.data.studentId == resource.data.studentId
+        && assigned(get(/databases/$(database)/documents/students/$(resource.data.studentId)).data) && validAssessment();
+      allow delete: if admin();
+    }
+    match /exercises/{id} {
+      allow read: if active();
+      allow create: if admin() || ((coach() || manager()) && sameInstitution(request.resource.data));
+      allow update: if admin() || (sameInstitution(resource.data) && sameInstitution(request.resource.data)
+        && (manager() || (coach() && resource.data.coachId == request.auth.uid)));
+      allow delete: if admin() || (manager() && sameInstitution(resource.data));
+    }
+    match /lessons/{id} {
+      allow read: if active();
+      allow create: if admin() || ((coach() || manager()) && sameInstitution(request.resource.data));
+      allow update, delete: if manages(resource.data) || (coach() && sameInstitution(resource.data) && resource.data.coachId == request.auth.uid);
+    }
+    match /vocalCoaches/{id} { allow read: if active(); allow write: if admin(); }
+    match /notifications/{id} {
+      allow read: if activeStudent(resource.data.studentId) || (active() && canReadStudent(resource.data.studentId));
+      allow create: if manages(get(/databases/$(database)/documents/students/$(request.resource.data.studentId)).data)
+        || assigned(get(/databases/$(database)/documents/students/$(request.resource.data.studentId)).data);
+      allow update: if activeStudent(resource.data.studentId) && only(['isRead']);
+      allow delete: if admin();
+    }
+    match /announcements/{id} { allow read: if active(); allow write: if admin(); }
+    match /badges/{id} { allow read: if active(); allow write: if admin(); }
+    match /institutions/{id} {
+      allow read: if active();
+      allow create, delete: if admin();
+      allow update: if admin() || (manager() && profile().institutionId == id);
+    }
+  }
+}
